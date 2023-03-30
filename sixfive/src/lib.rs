@@ -1,4 +1,5 @@
 use nih_plug::prelude::*;
+use nih_plug_egui::{create_egui_editor, egui, widgets, EguiState};
 use std::f32::consts;
 use std::sync::Arc;
 
@@ -6,8 +7,8 @@ use std::sync::Arc;
 
 /// A test tone generator that can either generate a sine wave based on the plugin's parameters or
 /// based on the current MIDI input.
-struct Sine {
-    params: Arc<SineParams>,
+pub struct SixFive {
+    params: Arc<SixFiveParams>,
     sample_rate: f32,
 
     /// The current phase of the sine wave, always kept between in `[0, 1]`.
@@ -26,7 +27,10 @@ struct Sine {
 }
 
 #[derive(Params)]
-struct SineParams {
+struct SixFiveParams {
+    #[persist = "editor-state"]
+    editor_state: Arc<EguiState>,
+
     #[id = "gain"]
     pub gain: FloatParam,
 
@@ -37,10 +41,10 @@ struct SineParams {
     pub use_midi: BoolParam,
 }
 
-impl Default for Sine {
+impl Default for SixFive {
     fn default() -> Self {
         Self {
-            params: Arc::new(SineParams::default()),
+            params: Arc::new(SixFiveParams::default()),
             sample_rate: 1.0,
 
             phase: 0.0,
@@ -52,9 +56,10 @@ impl Default for Sine {
     }
 }
 
-impl Default for SineParams {
+impl Default for SixFiveParams {
     fn default() -> Self {
         Self {
+            editor_state: EguiState::from_size(300, 180),
             gain: FloatParam::new(
                 "Gain",
                 -10.0,
@@ -85,7 +90,7 @@ impl Default for SineParams {
     }
 }
 
-impl Sine {
+impl SixFive {
     fn calculate_sine(&mut self, frequency: f32) -> f32 {
         let phase_delta = frequency / self.sample_rate;
         let sine = (self.phase * consts::TAU).sin();
@@ -99,11 +104,11 @@ impl Sine {
     }
 }
 
-impl Plugin for Sine {
-    const NAME: &'static str = "Sine Test Tone";
-    const VENDOR: &'static str = "Moist Plugins GmbH";
-    const URL: &'static str = "https://youtu.be/dQw4w9WgXcQ";
-    const EMAIL: &'static str = "info@example.com";
+impl Plugin for SixFive {
+    const NAME: &'static str = "SixFive: 8-Bit Inspired Musical State Machine";
+    const VENDOR: &'static str = "Brooke Chalmers";
+    const URL: &'static str = "https://breq.dev/";
+    const EMAIL: &'static str = "breq@breq.dev";
 
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
@@ -147,6 +152,28 @@ impl Plugin for Sine {
         self.midi_note_id = 0;
         self.midi_note_freq = 1.0;
         self.midi_note_gain.reset(0.0);
+    }
+
+    fn editor(&self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+        let params = self.params.clone();
+        create_egui_editor(
+            self.params.editor_state.clone(),
+            (),
+            |_, _| {},
+            move |egui_ctx, setter, _state| {
+                egui::CentralPanel::default().show(egui_ctx, |ui| {
+                    ui.label("Gain");
+                    ui.add(widgets::ParamSlider::for_param(&params.gain, setter));
+
+                    ui.label("Frequency");
+                    ui.add(widgets::ParamSlider::for_param(&params.frequency, setter));
+
+                    ui.label(
+                        "SixFive",
+                    );
+                });
+            },
+        )
     }
 
     fn process(
@@ -204,10 +231,10 @@ impl Plugin for Sine {
     }
 }
 
-impl ClapPlugin for Sine {
-    const CLAP_ID: &'static str = "com.moist-plugins-gmbh.sine";
+impl ClapPlugin for SixFive {
+    const CLAP_ID: &'static str = "dev.breq.plugins.sixfive";
     const CLAP_DESCRIPTION: Option<&'static str> =
-        Some("An optionally MIDI controlled sine test tone");
+        Some("A 8-bit inspired musical state machine");
     const CLAP_MANUAL_URL: Option<&'static str> = Some(Self::URL);
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] = &[
@@ -219,8 +246,8 @@ impl ClapPlugin for Sine {
     ];
 }
 
-impl Vst3Plugin for Sine {
-    const VST3_CLASS_ID: [u8; 16] = *b"SineMoistestPlug";
+impl Vst3Plugin for SixFive {
+    const VST3_CLASS_ID: [u8; 16] = *b"breqsixfivesound";
     const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] = &[
         Vst3SubCategory::Instrument,
         Vst3SubCategory::Synth,
@@ -228,5 +255,5 @@ impl Vst3Plugin for Sine {
     ];
 }
 
-nih_export_clap!(Sine);
-nih_export_vst3!(Sine);
+nih_export_clap!(SixFive);
+nih_export_vst3!(SixFive);
