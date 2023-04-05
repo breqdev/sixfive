@@ -254,39 +254,41 @@ impl Plugin for SixFive {
                                             );
 
                                             for col in 0..8 {
-                                                let response = ui.add(
-                                                    egui::TextEdit::singleline(
-                                                        &mut state.rom_bank[row * 8 + col],
-                                                    )
-                                                    .desired_width(16.0),
-                                                );
+                                                let index_in_rom: usize = row * 8 + col;
 
-                                                if response.lost_focus() {
-                                                    let index_in_rom = row * 8 + col;
-
-                                                    if ui.input().key_pressed(egui::Key::Enter)
-                                                        || ui.input().key_pressed(egui::Key::Tab)
-                                                    {
-                                                        let input_value = u8::from_str_radix(
-                                                            &state.rom_bank[index_in_rom],
-                                                            16,
+                                                egui::Frame::none().stroke(egui::Stroke::new(2.0, if instruction_pointer.lock().unwrap().clone() == index_in_rom as u8 { egui::Color32::RED } else { egui::Color32::BLACK })).show(ui, |ui| {
+                                                    let response = ui.add(
+                                                        egui::TextEdit::singleline(
+                                                            &mut state.rom_bank[index_in_rom],
                                                         )
-                                                        .unwrap_or(0);
+                                                        .desired_width(16.0).frame(false),
+                                                    );
 
-                                                        params.rom_banks.lock().unwrap()
-                                                            [selected_index][index_in_rom] =
-                                                            input_value;
+                                                    if response.lost_focus() {
+                                                        if ui.input().key_pressed(egui::Key::Enter)
+                                                            || ui.input().key_pressed(egui::Key::Tab)
+                                                        {
+                                                            let input_value = u8::from_str_radix(
+                                                                &state.rom_bank[index_in_rom],
+                                                                16,
+                                                            )
+                                                            .unwrap_or(0);
 
-                                                        state.rom_bank[index_in_rom] =
-                                                            format!("{:02X}", input_value);
-                                                    } else {
-                                                        state.rom_bank[index_in_rom] = format!(
-                                                            "{:02X}",
                                                             params.rom_banks.lock().unwrap()
-                                                                [selected_index][index_in_rom]
-                                                        );
+                                                                [selected_index][index_in_rom] =
+                                                                input_value;
+
+                                                            state.rom_bank[index_in_rom] =
+                                                                format!("{:02X}", input_value);
+                                                        } else {
+                                                            state.rom_bank[index_in_rom] = format!(
+                                                                "{:02X}",
+                                                                params.rom_banks.lock().unwrap()
+                                                                    [selected_index][index_in_rom]
+                                                            );
+                                                        }
                                                     }
-                                                }
+                                                });
                                             }
                                         });
                                     }
