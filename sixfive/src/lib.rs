@@ -1,29 +1,20 @@
 use nih_plug::prelude::*;
-use nih_plug_egui::{create_egui_editor, egui, widgets, EguiState};
-use std::f32::consts;
-use std::sync::Arc;
+use nih_plug_egui::{create_egui_editor, egui, EguiState};
+use std::sync::{Arc, Mutex};
 
-// nih-plug sine wave example for now
-
-/// A test tone generator that can either generate a sine wave based on the plugin's parameters or
-/// based on the current MIDI input.
 pub struct SixFive {
     params: Arc<SixFiveParams>,
     sample_rate: f32,
 
-    /// The current phase of the sine wave, always kept between in `[0, 1]`.
-    phase: f32,
+    instruction_pointer: Arc<Mutex<u8>>,
+}
 
-    /// The MIDI note ID of the active note, if triggered by MIDI.
-    midi_note_id: u8,
-    /// The frequency if the active note, if triggered by MIDI.
-    midi_note_freq: f32,
-    /// A simple attack and release envelope to avoid clicks. Controlled through velocity and
-    /// aftertouch.
-    ///
-    /// Smoothing is built into the parameters, but you can also use them manually if you need to
-    /// smooth soemthing that isn't a parameter.
-    midi_note_gain: Smoother<f32>,
+#[derive(PartialEq, Copy, Clone, Enum)]
+enum RomBank {
+    A,
+    B,
+    C,
+    D,
 }
 
 #[derive(Params)]
@@ -31,14 +22,60 @@ struct SixFiveParams {
     #[persist = "editor-state"]
     editor_state: Arc<EguiState>,
 
-    #[id = "gain"]
-    pub gain: FloatParam,
+    #[id = "rom-bank-select"]
+    rom_bank: EnumParam<RomBank>,
 
-    #[id = "freq"]
-    pub frequency: FloatParam,
+    #[persist = "rom-bank-a"]
+    rom_bank_a: Mutex<Vec<u8>>,
 
-    #[id = "usemid"]
-    pub use_midi: BoolParam,
+    #[persist = "rom-bank-b"]
+    rom_bank_b: Mutex<Vec<u8>>,
+
+    #[persist = "rom-bank-c"]
+    rom_bank_c: Mutex<Vec<u8>>,
+
+    #[persist = "rom-bank-d"]
+    rom_bank_d: Mutex<Vec<u8>>,
+
+    #[id = "Clock Speed"]
+    clock_speed: IntParam,
+
+    // todo: instruction pointer overwrite?
+    #[id = "Trampoline Vector A"]
+    trampoline_vector_a: BoolParam,
+
+    #[id = "Trampoline Vector B"]
+    trampoline_vector_b: BoolParam,
+
+    #[id = "Trampoline Vector C"]
+    trampoline_vector_c: BoolParam,
+
+    #[id = "Trampoline Vector D"]
+    trampoline_vector_d: BoolParam,
+
+    #[id = "Square Wave 1 Enable"]
+    square_wave_1_enable: BoolParam,
+
+    #[id = "Square Wave 2 Enable"]
+    square_wave_2_enable: BoolParam,
+
+    #[id = "Triangle Wave Enable"]
+    triangle_wave_enable: BoolParam,
+
+    #[id = "Noise Enable"]
+    noise_enable: BoolParam,
+}
+
+struct GuiUserState {
+    rom_bank: Vec<String>,
+}
+
+impl Default for GuiUserState {
+    fn default() -> Self {
+        Self {
+            rom_bank: vec!["00".to_string(); 64],
+        }
+    }
 }
 
 impl Default for SixFive {
@@ -47,11 +84,7 @@ impl Default for SixFive {
             params: Arc::new(SixFiveParams::default()),
             sample_rate: 1.0,
 
-            phase: 0.0,
-
-            midi_note_id: 0,
-            midi_note_freq: 1.0,
-            midi_note_gain: Smoother::new(SmoothingStyle::Linear(5.0)),
+            instruction_pointer: Arc::new(Mutex::new(0)),
         }
     }
 }
@@ -59,50 +92,56 @@ impl Default for SixFive {
 impl Default for SixFiveParams {
     fn default() -> Self {
         Self {
-            editor_state: EguiState::from_size(300, 180),
-            gain: FloatParam::new(
-                "Gain",
-                -10.0,
-                FloatRange::Linear {
-                    min: -30.0,
-                    max: 0.0,
+            editor_state: EguiState::from_size(600, 300),
+
+            rom_bank: EnumParam::new("ROM Bank Selection", RomBank::A),
+
+            rom_bank_a: Mutex::new(vec![0; 64]),
+            rom_bank_b: Mutex::new(vec![0; 64]),
+            rom_bank_c: Mutex::new(vec![0; 64]),
+            rom_bank_d: Mutex::new(vec![0; 64]),
+
+            clock_speed: IntParam::new(
+                "Clock Speed",
+                1,
+                IntRange::Linear {
+                    min: 1,
+                    max: 1_000_000,
                 },
             )
-            .with_smoother(SmoothingStyle::Linear(3.0))
-            .with_step_size(0.01)
-            .with_unit(" dB"),
-            frequency: FloatParam::new(
-                "Frequency",
-                420.0,
-                FloatRange::Skewed {
-                    min: 1.0,
-                    max: 20_000.0,
-                    factor: FloatRange::skew_factor(-2.0),
-                },
-            )
-            .with_smoother(SmoothingStyle::Linear(10.0))
-            // We purposely don't specify a step size here, but the parameter should still be
-            // displayed as if it were rounded. This formatter also includes the unit.
-            .with_value_to_string(formatters::v2s_f32_hz_then_khz(0))
-            .with_string_to_value(formatters::s2v_f32_hz_then_khz()),
-            use_midi: BoolParam::new("Use MIDI", false),
+            .with_smoother(SmoothingStyle::Logarithmic(0.1)),
+
+            // todo: instruction pointer overwrite?
+            trampoline_vector_a: BoolParam::new("Trampoline Vector A", false),
+            trampoline_vector_b: BoolParam::new("Trampoline Vector B", false),
+            trampoline_vector_c: BoolParam::new("Trampoline Vector C", false),
+            trampoline_vector_d: BoolParam::new("Trampoline Vector D", false),
+
+            square_wave_1_enable: BoolParam::new("Square Wave 1 Enable", true),
+            square_wave_2_enable: BoolParam::new("Square Wave 2 Enable", true),
+            triangle_wave_enable: BoolParam::new("Triangle Wave Enable", true),
+            noise_enable: BoolParam::new("Noise Enable", true),
         }
     }
 }
 
 impl SixFive {
-    fn calculate_sine(&mut self, frequency: f32) -> f32 {
-        let phase_delta = frequency / self.sample_rate;
-        let sine = (self.phase * consts::TAU).sin();
+    // fn calculate_sine(&mut self, frequency: f32) -> f32 {
+    //     let phase_delta = frequency / self.sample_rate;
+    //     let sine = (self.phase * consts::TAU).sin();
 
-        self.phase += phase_delta;
-        if self.phase >= 1.0 {
-            self.phase -= 1.0;
-        }
+    //     self.phase += phase_delta;
+    //     if self.phase >= 1.0 {
+    //         self.phase -= 1.0;
+    //     }
 
-        sine
-    }
+    //     sine
+    // }
 }
+
+const OVERWRITE_INSTRUCTION_POINTER_VALUES: [u8; 4] = [0x00, 0x10, 0x20, 0x30];
+const TRAMPOLINE_VECTOR_JUMP_ADDRESSES: [(u8, u8); 4] =
+    [(0x28, 0x2C), (0x28, 0x3C), (0x30, 0x34), (0x38, 0x3C)];
 
 impl Plugin for SixFive {
     const NAME: &'static str = "SixFive: 8-Bit Inspired Musical State Machine";
@@ -114,7 +153,6 @@ impl Plugin for SixFive {
 
     const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
         AudioIOLayout {
-            // This is also the default and can be omitted here
             main_input_channels: None,
             main_output_channels: NonZeroU32::new(2),
             ..AudioIOLayout::const_default()
@@ -148,29 +186,331 @@ impl Plugin for SixFive {
     }
 
     fn reset(&mut self) {
-        self.phase = 0.0;
-        self.midi_note_id = 0;
-        self.midi_note_freq = 1.0;
-        self.midi_note_gain.reset(0.0);
+        *self.instruction_pointer.lock().unwrap() = 0;
     }
 
     fn editor(&self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         let params = self.params.clone();
+        let instruction_pointer = self.instruction_pointer.clone();
+
         create_egui_editor(
             self.params.editor_state.clone(),
-            (),
+            GuiUserState::default(),
             |_, _| {},
-            move |egui_ctx, setter, _state| {
+            move |egui_ctx, setter, state| {
+                egui_ctx.set_visuals(egui::Visuals::light());
+
                 egui::CentralPanel::default().show(egui_ctx, |ui| {
-                    ui.label("Gain");
-                    ui.add(widgets::ParamSlider::for_param(&params.gain, setter));
+                    ui.columns(2, |columns| {
+                        columns[0].vertical_centered_justified(|ui| {
+                            ui.group(|ui| {
+                                ui.vertical_centered_justified(|ui| {
+                                    let mut selected_index = match params.rom_bank.value() {
+                                        RomBank::A => 0,
+                                        RomBank::B => 1,
+                                        RomBank::C => 2,
+                                        RomBank::D => 3,
+                                    };
 
-                    ui.label("Frequency");
-                    ui.add(widgets::ParamSlider::for_param(&params.frequency, setter));
+                                    if egui::ComboBox::from_label("ROM Bank")
+                                        .show_index(ui, &mut selected_index, 4, |i| match i {
+                                            0 => "A".to_string(),
+                                            1 => "B".to_string(),
+                                            2 => "C".to_string(),
+                                            3 => "D".to_string(),
+                                            _ => unreachable!(),
+                                        })
+                                        .changed()
+                                    {
+                                        setter.begin_set_parameter(&params.rom_bank);
+                                        setter.set_parameter(
+                                            &params.rom_bank,
+                                            match selected_index {
+                                                0 => RomBank::A,
+                                                1 => RomBank::B,
+                                                2 => RomBank::C,
+                                                3 => RomBank::D,
+                                                _ => unreachable!(),
+                                            },
+                                        );
+                                        setter.end_set_parameter(&params.rom_bank);
 
-                    ui.label(
-                        "SixFive",
-                    );
+                                        state.rom_bank = match selected_index {
+                                            0 => params.rom_bank_a.lock().unwrap(),
+                                            1 => params.rom_bank_b.lock().unwrap(),
+                                            2 => params.rom_bank_c.lock().unwrap(),
+                                            3 => params.rom_bank_d.lock().unwrap(),
+                                            _ => unreachable!(),
+                                        }
+                                        .iter()
+                                        .map(|b| format!("{:02X}", b))
+                                        .collect();
+                                    }
+
+                                    ui.separator();
+
+                                    for row in 0..8 {
+                                        ui.horizontal_top(|ui| {
+                                            ui.label(
+                                                egui::RichText::from(format!("0x{:02X}", row * 8))
+                                                    .monospace(),
+                                            );
+
+                                            for col in 0..8 {
+                                                let response = ui.add(
+                                                    egui::TextEdit::singleline(
+                                                        &mut state.rom_bank[row * 8 + col],
+                                                    )
+                                                    .desired_width(16.0),
+                                                );
+
+                                                if response.lost_focus() {
+                                                    let index = row * 8 + col;
+                                                    let value = u8::from_str_radix(
+                                                        &state.rom_bank[index],
+                                                        16,
+                                                    )
+                                                    .unwrap_or(0);
+
+                                                    if ui.input().key_pressed(egui::Key::Enter)
+                                                        || ui.input().key_pressed(egui::Key::Tab)
+                                                    {
+                                                        match params.rom_bank.value() {
+                                                            RomBank::A => {
+                                                                params.rom_bank_a.lock().unwrap()
+                                                                    [index] = value;
+                                                            }
+                                                            RomBank::B => {
+                                                                params.rom_bank_b.lock().unwrap()
+                                                                    [index] = value;
+                                                            }
+                                                            RomBank::C => {
+                                                                params.rom_bank_c.lock().unwrap()
+                                                                    [index] = value;
+                                                            }
+                                                            RomBank::D => {
+                                                                params.rom_bank_d.lock().unwrap()
+                                                                    [index] = value;
+                                                            }
+                                                        }
+
+                                                        state.rom_bank[index] =
+                                                            format!("{:02X}", value);
+                                                    } else {
+                                                        state.rom_bank[index] = format!(
+                                                            "{:02X}",
+                                                            match params.rom_bank.value() {
+                                                                RomBank::A => {
+                                                                    params
+                                                                        .rom_bank_a
+                                                                        .lock()
+                                                                        .unwrap()
+                                                                }
+                                                                RomBank::B => {
+                                                                    params
+                                                                        .rom_bank_b
+                                                                        .lock()
+                                                                        .unwrap()
+                                                                }
+                                                                RomBank::C => {
+                                                                    params
+                                                                        .rom_bank_c
+                                                                        .lock()
+                                                                        .unwrap()
+                                                                }
+                                                                RomBank::D => {
+                                                                    params
+                                                                        .rom_bank_d
+                                                                        .lock()
+                                                                        .unwrap()
+                                                                }
+                                                            }[index]
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    }
+                                });
+                            });
+
+                            ui.group(|ui| {
+                                ui.horizontal_top(|ui| {
+                                    ui.label("Instruction Pointer");
+                                    ui.label(
+                                        egui::RichText::from(format!(
+                                            "0x{:02X}",
+                                            instruction_pointer.lock().unwrap().clone()
+                                        ))
+                                        .monospace(),
+                                    );
+                                    ui.label("Clock Speed");
+                                    ui.label(egui::RichText::from("10 Hz").monospace());
+                                });
+                            });
+                        });
+
+                        columns[1].vertical_centered_justified(|ui| {
+                            ui.group(|ui| {
+                                ui.label("Overwrite Instruction Pointer");
+                                ui.horizontal(|ui| {
+                                    for i in OVERWRITE_INSTRUCTION_POINTER_VALUES {
+                                        if ui
+                                            .button(
+                                                egui::RichText::from(format!("0x{:02X}", i))
+                                                    .monospace(),
+                                            )
+                                            .clicked()
+                                        {
+                                            *instruction_pointer.lock().unwrap() = i;
+                                        }
+                                    }
+                                })
+                            });
+
+                            ui.group(|ui| {
+                                ui.label("Toggle Trampoline Vectors");
+                                ui.horizontal(|ui| {
+                                    for (i, (off, on)) in
+                                        TRAMPOLINE_VECTOR_JUMP_ADDRESSES.iter().enumerate()
+                                    {
+                                        ui.vertical(|ui| {
+                                            ui.label(format!(" 0x{:02X}", 0xFC + i));
+
+                                            let param = match i {
+                                                0 => &params.trampoline_vector_a,
+                                                1 => &params.trampoline_vector_b,
+                                                2 => &params.trampoline_vector_c,
+                                                3 => &params.trampoline_vector_d,
+                                                _ => unreachable!(),
+                                            };
+
+                                            let mut job = egui::text::LayoutJob::default();
+
+                                            job.append(
+                                                format!("0x{:02X}\n", off).as_str(),
+                                                0.0,
+                                                egui::TextFormat {
+                                                    font_id: egui::FontId::new(
+                                                        14.0,
+                                                        egui::FontFamily::Monospace,
+                                                    ),
+                                                    color: if param.value() {
+                                                        egui::Color32::GRAY
+                                                    } else {
+                                                        egui::Color32::BLACK
+                                                    },
+                                                    ..Default::default()
+                                                },
+                                            );
+
+                                            job.append(
+                                                format!("0x{:02X}", on).as_str(),
+                                                0.0,
+                                                egui::TextFormat {
+                                                    font_id: egui::FontId::new(
+                                                        14.0,
+                                                        egui::FontFamily::Monospace,
+                                                    ),
+                                                    color: if param.value() {
+                                                        egui::Color32::BLACK
+                                                    } else {
+                                                        egui::Color32::GRAY
+                                                    },
+                                                    ..Default::default()
+                                                },
+                                            );
+
+                                            if ui.button(job).clicked() {
+                                                setter.begin_set_parameter(param);
+                                                setter.set_parameter(param, !param.value());
+                                                setter.end_set_parameter(param);
+                                            }
+                                        });
+                                    }
+                                })
+                            });
+
+                            ui.group(|ui| {
+                                ui.label("Enable Synth Voices");
+                                ui.horizontal(|ui| {
+                                    let square_wave_1_enable = params.square_wave_1_enable.value();
+                                    let square_wave_2_enable = params.square_wave_2_enable.value();
+                                    let triangle_wave_enable = params.triangle_wave_enable.value();
+                                    let noise_enable = params.noise_enable.value();
+
+                                    if ui
+                                        .button(egui::RichText::new("Square 1").color(
+                                            if square_wave_1_enable {
+                                                egui::Color32::BLACK
+                                            } else {
+                                                egui::Color32::GRAY
+                                            },
+                                        ))
+                                        .clicked()
+                                    {
+                                        setter.begin_set_parameter(&params.square_wave_1_enable);
+                                        setter.set_parameter(
+                                            &params.square_wave_1_enable,
+                                            !square_wave_1_enable,
+                                        );
+                                        setter.end_set_parameter(&params.square_wave_1_enable);
+                                    }
+
+                                    if ui
+                                        .button(egui::RichText::new("Square 2").color(
+                                            if square_wave_2_enable {
+                                                egui::Color32::BLACK
+                                            } else {
+                                                egui::Color32::GRAY
+                                            },
+                                        ))
+                                        .clicked()
+                                    {
+                                        setter.begin_set_parameter(&params.square_wave_2_enable);
+                                        setter.set_parameter(
+                                            &params.square_wave_2_enable,
+                                            !square_wave_2_enable,
+                                        );
+                                        setter.end_set_parameter(&params.square_wave_2_enable);
+                                    }
+
+                                    if ui
+                                        .button(egui::RichText::new("Triangle").color(
+                                            if triangle_wave_enable {
+                                                egui::Color32::BLACK
+                                            } else {
+                                                egui::Color32::GRAY
+                                            },
+                                        ))
+                                        .clicked()
+                                    {
+                                        setter.begin_set_parameter(&params.triangle_wave_enable);
+                                        setter.set_parameter(
+                                            &params.triangle_wave_enable,
+                                            !triangle_wave_enable,
+                                        );
+                                        setter.end_set_parameter(&params.triangle_wave_enable);
+                                    }
+
+                                    if ui
+                                        .button(egui::RichText::new("Noise").color(
+                                            if noise_enable {
+                                                egui::Color32::BLACK
+                                            } else {
+                                                egui::Color32::GRAY
+                                            },
+                                        ))
+                                        .clicked()
+                                    {
+                                        setter.begin_set_parameter(&params.noise_enable);
+                                        setter.set_parameter(&params.noise_enable, !noise_enable);
+                                        setter.end_set_parameter(&params.noise_enable);
+                                    }
+                                })
+                            });
+                        });
+                    });
                 });
             },
         )
@@ -184,46 +524,19 @@ impl Plugin for SixFive {
     ) -> ProcessStatus {
         let mut next_event = context.next_event();
         for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {
-            // Smoothing is optionally built into the parameters themselves
-            let gain = self.params.gain.smoothed.next();
-
-            // This plugin can be either triggered by MIDI or controleld by a parameter
-            let sine = if self.params.use_midi.value() {
-                // Act on the next MIDI event
-                while let Some(event) = next_event {
-                    if event.timing() > sample_id as u32 {
-                        break;
-                    }
-
-                    match event {
-                        NoteEvent::NoteOn { note, velocity, .. } => {
-                            self.midi_note_id = note;
-                            self.midi_note_freq = util::midi_note_to_freq(note);
-                            self.midi_note_gain.set_target(self.sample_rate, velocity);
-                        }
-                        NoteEvent::NoteOff { note, .. } if note == self.midi_note_id => {
-                            self.midi_note_gain.set_target(self.sample_rate, 0.0);
-                        }
-                        NoteEvent::PolyPressure { note, pressure, .. }
-                            if note == self.midi_note_id =>
-                        {
-                            self.midi_note_gain.set_target(self.sample_rate, pressure);
-                        }
-                        _ => (),
-                    }
-
-                    next_event = context.next_event();
+            while let Some(event) = next_event {
+                if event.timing() > sample_id as u32 {
+                    break;
                 }
 
-                // This gain envelope prevents clicks with new notes and with released notes
-                self.calculate_sine(self.midi_note_freq) * self.midi_note_gain.next()
-            } else {
-                let frequency = self.params.frequency.smoothed.next();
-                self.calculate_sine(frequency)
-            };
+                match event {
+                    NoteEvent::NoteOn { note, velocity, .. } => {}
+                    NoteEvent::NoteOff { note, .. } => {}
+                    NoteEvent::MidiCC { cc, value, .. } => {}
+                    _ => (),
+                }
 
-            for sample in channel_samples {
-                *sample = sine * util::db_to_gain_fast(gain);
+                next_event = context.next_event();
             }
         }
 
@@ -233,8 +546,7 @@ impl Plugin for SixFive {
 
 impl ClapPlugin for SixFive {
     const CLAP_ID: &'static str = "dev.breq.plugins.sixfive";
-    const CLAP_DESCRIPTION: Option<&'static str> =
-        Some("A 8-bit inspired musical state machine");
+    const CLAP_DESCRIPTION: Option<&'static str> = Some("A 8-bit inspired musical state machine");
     const CLAP_MANUAL_URL: Option<&'static str> = Some(Self::URL);
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] = &[
