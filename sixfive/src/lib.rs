@@ -7,6 +7,9 @@ pub struct SixFive {
     sample_rate: f32,
 
     instruction_pointer: Arc<Mutex<u8>>,
+    clock_running: Arc<Mutex<bool>>,
+
+    samples_until_execute: f64,
 }
 
 #[derive(PartialEq, Copy, Clone, Enum)]
@@ -94,6 +97,9 @@ impl Default for SixFive {
             sample_rate: 1.0,
 
             instruction_pointer: Arc::new(Mutex::new(0)),
+            clock_running: Arc::new(Mutex::new(false)),
+
+            samples_until_execute: 0.0,
         }
     }
 }
@@ -175,7 +181,7 @@ impl SixFiveEditor {
             .show(ui, |ui| {
                 let response = ui.add(
                     egui::TextEdit::singleline(input)
-                        .desired_width(16.0)
+                        .desired_width(15.0)
                         .frame(false),
                 );
 
@@ -247,19 +253,51 @@ impl SixFiveEditor {
         });
     }
 
-    fn draw_instruction_pointer(ui: &mut egui::Ui, instruction_pointer: &Arc<Mutex<u8>>) {
+    fn draw_instruction_pointer(
+        ui: &mut egui::Ui,
+        params: &SixFiveParams,
+        setter: &ParamSetter,
+        instruction_pointer: &Arc<Mutex<u8>>,
+        clock_running: &Arc<Mutex<bool>>,
+    ) {
         ui.group(|ui| {
-            ui.horizontal_top(|ui| {
-                ui.label("Instruction Pointer");
-                ui.label(
-                    egui::RichText::from(format!(
-                        "0x{:02X}",
-                        instruction_pointer.lock().unwrap().clone()
-                    ))
-                    .monospace(),
-                );
-                ui.label("Clock Speed");
-                ui.label(egui::RichText::from("10 Hz").monospace());
+            ui.vertical_centered_justified(|ui| {
+                ui.horizontal_top(|ui| {
+                    ui.label("Instruction Pointer");
+                    ui.label(
+                        egui::RichText::from(format!(
+                            "0x{:02X}",
+                            instruction_pointer.lock().unwrap().clone()
+                        ))
+                        .monospace(),
+                    );
+                    ui.label("Clock Speed");
+                    ui.label(
+                        egui::RichText::from(format!("{} Hz", params.clock_speed.value()))
+                            .monospace(),
+                    );
+                });
+
+                ui.separator();
+
+                ui.horizontal_top(|ui| {
+                    if ui.button("↺").clicked() {
+                        *instruction_pointer.lock().unwrap() = 0;
+                    }
+
+                    if ui.button("▶").clicked() {
+                        *clock_running.lock().unwrap() = true;
+                    }
+
+                    if ui.button("⏹").clicked() {
+                        *clock_running.lock().unwrap() = false;
+                        *instruction_pointer.lock().unwrap() = 0;
+                    }
+
+                    if ui.button("⏸").clicked() {
+                        *clock_running.lock().unwrap() = false;
+                    }
+                });
             });
         });
     }
@@ -451,6 +489,7 @@ impl Plugin for SixFive {
     fn editor(&self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         let params = self.params.clone();
         let instruction_pointer = self.instruction_pointer.clone();
+        let clock_running = self.clock_running.clone();
 
         create_egui_editor(
             self.params.editor_state.clone(),
@@ -470,7 +509,13 @@ impl Plugin for SixFive {
                                 &instruction_pointer,
                             );
 
-                            SixFiveEditor::draw_instruction_pointer(ui, &instruction_pointer);
+                            SixFiveEditor::draw_instruction_pointer(
+                                ui,
+                                &params,
+                                setter,
+                                &instruction_pointer,
+                                &clock_running,
+                            );
                         });
 
                         columns[1].vertical_centered_justified(|ui| {
@@ -497,6 +542,19 @@ impl Plugin for SixFive {
     ) -> ProcessStatus {
         let mut next_event = context.next_event();
         for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {
+            if *self.clock_running.lock().unwrap() {
+                if self.samples_until_execute <= 0.0 {
+                    // TODO: execute instruction
+                    let mut ip = self.instruction_pointer.lock().unwrap();
+                    *ip = ip.wrapping_add(1);
+
+                    self.samples_until_execute +=
+                        (self.sample_rate as f64) / (self.params.clock_speed.value() as f64);
+                }
+
+                self.samples_until_execute -= 1.0;
+            }
+
             while let Some(event) = next_event {
                 if event.timing() > sample_id as u32 {
                     break;
