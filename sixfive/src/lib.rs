@@ -17,53 +17,62 @@ enum RomBank {
     D,
 }
 
+impl RomBank {
+    fn as_index(&self) -> usize {
+        match self {
+            RomBank::A => 0,
+            RomBank::B => 1,
+            RomBank::C => 2,
+            RomBank::D => 3,
+        }
+    }
+
+    fn from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(RomBank::A),
+            1 => Some(RomBank::B),
+            2 => Some(RomBank::C),
+            3 => Some(RomBank::D),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Params)]
+struct TrampolineVectorParams {
+    #[id = "state"]
+    pub state: BoolParam,
+}
+
 #[derive(Params)]
 struct SixFiveParams {
     #[persist = "editor-state"]
     editor_state: Arc<EguiState>,
 
     #[id = "rom-bank-select"]
-    rom_bank: EnumParam<RomBank>,
+    pub rom_bank_select: EnumParam<RomBank>,
 
-    #[persist = "rom-bank-a"]
-    rom_bank_a: Mutex<Vec<u8>>,
+    #[persist = "rom-banks"]
+    rom_banks: Mutex<[Vec<u8>; 4]>,
 
-    #[persist = "rom-bank-b"]
-    rom_bank_b: Mutex<Vec<u8>>,
+    #[id = "clock-speed"]
+    pub clock_speed: IntParam,
 
-    #[persist = "rom-bank-c"]
-    rom_bank_c: Mutex<Vec<u8>>,
+    // todo: instruction pointer overwrite as parameters?
+    #[nested(array, group = "trampoline-vectors")]
+    pub trampoline_vectors: [TrampolineVectorParams; 4],
 
-    #[persist = "rom-bank-d"]
-    rom_bank_d: Mutex<Vec<u8>>,
+    #[id = "square-1-enable"]
+    pub square_wave_1_enable: BoolParam,
 
-    #[id = "Clock Speed"]
-    clock_speed: IntParam,
+    #[id = "square-2-enable"]
+    pub square_wave_2_enable: BoolParam,
 
-    // todo: instruction pointer overwrite?
-    #[id = "Trampoline Vector A"]
-    trampoline_vector_a: BoolParam,
+    #[id = "triangle-enable"]
+    pub triangle_wave_enable: BoolParam,
 
-    #[id = "Trampoline Vector B"]
-    trampoline_vector_b: BoolParam,
-
-    #[id = "Trampoline Vector C"]
-    trampoline_vector_c: BoolParam,
-
-    #[id = "Trampoline Vector D"]
-    trampoline_vector_d: BoolParam,
-
-    #[id = "Square Wave 1 Enable"]
-    square_wave_1_enable: BoolParam,
-
-    #[id = "Square Wave 2 Enable"]
-    square_wave_2_enable: BoolParam,
-
-    #[id = "Triangle Wave Enable"]
-    triangle_wave_enable: BoolParam,
-
-    #[id = "Noise Enable"]
-    noise_enable: BoolParam,
+    #[id = "noise-enable"]
+    pub noise_enable: BoolParam,
 }
 
 struct GuiUserState {
@@ -94,12 +103,9 @@ impl Default for SixFiveParams {
         Self {
             editor_state: EguiState::from_size(600, 300),
 
-            rom_bank: EnumParam::new("ROM Bank Selection", RomBank::A),
+            rom_bank_select: EnumParam::new("ROM Bank Selection", RomBank::A),
 
-            rom_bank_a: Mutex::new(vec![0; 64]),
-            rom_bank_b: Mutex::new(vec![0; 64]),
-            rom_bank_c: Mutex::new(vec![0; 64]),
-            rom_bank_d: Mutex::new(vec![0; 64]),
+            rom_banks: Mutex::new([vec![0; 64], vec![0; 64], vec![0; 64], vec![0; 64]]),
 
             clock_speed: IntParam::new(
                 "Clock Speed",
@@ -112,10 +118,20 @@ impl Default for SixFiveParams {
             .with_smoother(SmoothingStyle::Logarithmic(0.1)),
 
             // todo: instruction pointer overwrite?
-            trampoline_vector_a: BoolParam::new("Trampoline Vector A", false),
-            trampoline_vector_b: BoolParam::new("Trampoline Vector B", false),
-            trampoline_vector_c: BoolParam::new("Trampoline Vector C", false),
-            trampoline_vector_d: BoolParam::new("Trampoline Vector D", false),
+            trampoline_vectors: [
+                TrampolineVectorParams {
+                    state: BoolParam::new("Trampoline Vector A", false),
+                },
+                TrampolineVectorParams {
+                    state: BoolParam::new("Trampoline Vector B", false),
+                },
+                TrampolineVectorParams {
+                    state: BoolParam::new("Trampoline Vector C", false),
+                },
+                TrampolineVectorParams {
+                    state: BoolParam::new("Trampoline Vector D", false),
+                },
+            ],
 
             square_wave_1_enable: BoolParam::new("Square Wave 1 Enable", true),
             square_wave_2_enable: BoolParam::new("Square Wave 2 Enable", true),
@@ -205,46 +221,27 @@ impl Plugin for SixFive {
                         columns[0].vertical_centered_justified(|ui| {
                             ui.group(|ui| {
                                 ui.vertical_centered_justified(|ui| {
-                                    let mut selected_index = match params.rom_bank.value() {
-                                        RomBank::A => 0,
-                                        RomBank::B => 1,
-                                        RomBank::C => 2,
-                                        RomBank::D => 3,
-                                    };
+                                    let mut selected_index =
+                                        params.rom_bank_select.value().as_index();
 
                                     if egui::ComboBox::from_label("ROM Bank")
-                                        .show_index(ui, &mut selected_index, 4, |i| match i {
-                                            0 => "A".to_string(),
-                                            1 => "B".to_string(),
-                                            2 => "C".to_string(),
-                                            3 => "D".to_string(),
-                                            _ => unreachable!(),
+                                        .show_index(ui, &mut selected_index, 4, |i| {
+                                            ["A", "B", "C", "D"][i].to_string()
                                         })
                                         .changed()
                                     {
-                                        setter.begin_set_parameter(&params.rom_bank);
+                                        setter.begin_set_parameter(&params.rom_bank_select);
                                         setter.set_parameter(
-                                            &params.rom_bank,
-                                            match selected_index {
-                                                0 => RomBank::A,
-                                                1 => RomBank::B,
-                                                2 => RomBank::C,
-                                                3 => RomBank::D,
-                                                _ => unreachable!(),
-                                            },
+                                            &params.rom_bank_select,
+                                            RomBank::from_index(selected_index).unwrap(),
                                         );
-                                        setter.end_set_parameter(&params.rom_bank);
+                                        setter.end_set_parameter(&params.rom_bank_select);
 
-                                        state.rom_bank = match selected_index {
-                                            0 => params.rom_bank_a.lock().unwrap(),
-                                            1 => params.rom_bank_b.lock().unwrap(),
-                                            2 => params.rom_bank_c.lock().unwrap(),
-                                            3 => params.rom_bank_d.lock().unwrap(),
-                                            _ => unreachable!(),
-                                        }
-                                        .iter()
-                                        .map(|b| format!("{:02X}", b))
-                                        .collect();
+                                        state.rom_bank = params.rom_banks.lock().unwrap()
+                                            [selected_index]
+                                            .iter()
+                                            .map(|b| format!("{:02X}", b))
+                                            .collect();
                                     }
 
                                     ui.separator();
@@ -265,66 +262,28 @@ impl Plugin for SixFive {
                                                 );
 
                                                 if response.lost_focus() {
-                                                    let index = row * 8 + col;
-                                                    let value = u8::from_str_radix(
-                                                        &state.rom_bank[index],
-                                                        16,
-                                                    )
-                                                    .unwrap_or(0);
+                                                    let index_in_rom = row * 8 + col;
 
                                                     if ui.input().key_pressed(egui::Key::Enter)
                                                         || ui.input().key_pressed(egui::Key::Tab)
                                                     {
-                                                        match params.rom_bank.value() {
-                                                            RomBank::A => {
-                                                                params.rom_bank_a.lock().unwrap()
-                                                                    [index] = value;
-                                                            }
-                                                            RomBank::B => {
-                                                                params.rom_bank_b.lock().unwrap()
-                                                                    [index] = value;
-                                                            }
-                                                            RomBank::C => {
-                                                                params.rom_bank_c.lock().unwrap()
-                                                                    [index] = value;
-                                                            }
-                                                            RomBank::D => {
-                                                                params.rom_bank_d.lock().unwrap()
-                                                                    [index] = value;
-                                                            }
-                                                        }
+                                                        let input_value = u8::from_str_radix(
+                                                            &state.rom_bank[index_in_rom],
+                                                            16,
+                                                        )
+                                                        .unwrap_or(0);
 
-                                                        state.rom_bank[index] =
-                                                            format!("{:02X}", value);
+                                                        params.rom_banks.lock().unwrap()
+                                                            [selected_index][index_in_rom] =
+                                                            input_value;
+
+                                                        state.rom_bank[index_in_rom] =
+                                                            format!("{:02X}", input_value);
                                                     } else {
-                                                        state.rom_bank[index] = format!(
+                                                        state.rom_bank[index_in_rom] = format!(
                                                             "{:02X}",
-                                                            match params.rom_bank.value() {
-                                                                RomBank::A => {
-                                                                    params
-                                                                        .rom_bank_a
-                                                                        .lock()
-                                                                        .unwrap()
-                                                                }
-                                                                RomBank::B => {
-                                                                    params
-                                                                        .rom_bank_b
-                                                                        .lock()
-                                                                        .unwrap()
-                                                                }
-                                                                RomBank::C => {
-                                                                    params
-                                                                        .rom_bank_c
-                                                                        .lock()
-                                                                        .unwrap()
-                                                                }
-                                                                RomBank::D => {
-                                                                    params
-                                                                        .rom_bank_d
-                                                                        .lock()
-                                                                        .unwrap()
-                                                                }
-                                                            }[index]
+                                                            params.rom_banks.lock().unwrap()
+                                                                [selected_index][index_in_rom]
                                                         );
                                                     }
                                                 }
@@ -377,13 +336,7 @@ impl Plugin for SixFive {
                                         ui.vertical(|ui| {
                                             ui.label(format!(" 0x{:02X}", 0xFC + i));
 
-                                            let param = match i {
-                                                0 => &params.trampoline_vector_a,
-                                                1 => &params.trampoline_vector_b,
-                                                2 => &params.trampoline_vector_c,
-                                                3 => &params.trampoline_vector_d,
-                                                _ => unreachable!(),
-                                            };
+                                            let param = &params.trampoline_vectors[i].state;
 
                                             let mut job = egui::text::LayoutJob::default();
 
