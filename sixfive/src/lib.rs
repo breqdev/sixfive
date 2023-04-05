@@ -179,6 +179,10 @@ impl SixFiveEditor {
                         .frame(false),
                 );
 
+                if response.gained_focus() {
+                    *input = "".to_string();
+                }
+
                 if response.lost_focus() {
                     if ui.input().key_pressed(egui::Key::Enter)
                         || ui.input().key_pressed(egui::Key::Tab)
