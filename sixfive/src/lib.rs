@@ -56,7 +56,7 @@ struct SixFiveParams {
     pub rom_bank_select: EnumParam<RomBank>,
 
     #[persist = "rom-banks"]
-    rom_banks: Mutex<[Vec<u8>; 4]>,
+    rom_banks: Mutex<[Vec<u16>; 4]>,
 
     #[id = "clock-speed"]
     pub clock_speed: IntParam,
@@ -85,7 +85,7 @@ struct GuiUserState {
 impl Default for GuiUserState {
     fn default() -> Self {
         Self {
-            rom_bank: vec!["00".to_string(); 64],
+            rom_bank: vec!["0000".to_string(); 64],
         }
     }
 }
@@ -107,7 +107,7 @@ impl Default for SixFive {
 impl Default for SixFiveParams {
     fn default() -> Self {
         Self {
-            editor_state: EguiState::from_size(600, 300),
+            editor_state: EguiState::from_size(450, 500),
 
             rom_bank_select: EnumParam::new("ROM Bank Selection", RomBank::A),
 
@@ -161,14 +161,15 @@ impl SixFive {
     // }
 }
 
-const OVERWRITE_INSTRUCTION_POINTER_VALUES: [u8; 4] = [0x00, 0x10, 0x20, 0x30];
+const OVERWRITE_INSTRUCTION_POINTER_VALUES: [u8; 8] =
+    [0x00, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70];
 const TRAMPOLINE_VECTOR_JUMP_ADDRESSES: [(u8, u8); 4] =
     [(0x28, 0x2C), (0x28, 0x3C), (0x30, 0x34), (0x38, 0x3C)];
 
 struct SixFiveEditor;
 
 impl SixFiveEditor {
-    fn draw_rom_location(ui: &mut egui::Ui, active: bool, input: &mut String, value: &mut u8) {
+    fn draw_rom_location(ui: &mut egui::Ui, active: bool, input: &mut String, value: &mut u16) {
         egui::Frame::none()
             .stroke(egui::Stroke::new(
                 2.0,
@@ -181,7 +182,8 @@ impl SixFiveEditor {
             .show(ui, |ui| {
                 let response = ui.add(
                     egui::TextEdit::singleline(input)
-                        .desired_width(15.0)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(30.0)
                         .frame(false),
                 );
 
@@ -193,10 +195,10 @@ impl SixFiveEditor {
                     if ui.input().key_pressed(egui::Key::Enter)
                         || ui.input().key_pressed(egui::Key::Tab)
                     {
-                        *value = u8::from_str_radix(input, 16).unwrap_or(0);
+                        *value = u16::from_str_radix(input, 16).unwrap_or(0);
                     }
 
-                    *input = format!("{:02X}", value);
+                    *input = format!("{:04X}", value);
                 }
             });
     }
@@ -212,41 +214,77 @@ impl SixFiveEditor {
             ui.vertical_centered_justified(|ui| {
                 let mut selected_index = params.rom_bank_select.value().as_index();
 
-                if egui::ComboBox::from_label("ROM Bank")
-                    .show_index(ui, &mut selected_index, 4, |i| {
-                        ["A", "B", "C", "D"][i].to_string()
-                    })
-                    .changed()
-                {
-                    setter.begin_set_parameter(&params.rom_bank_select);
-                    setter.set_parameter(
-                        &params.rom_bank_select,
-                        RomBank::from_index(selected_index).unwrap(),
-                    );
-                    setter.end_set_parameter(&params.rom_bank_select);
+                ui.horizontal(|ui| {
+                    ui.add_space(50.0);
 
-                    state.rom_bank = params.rom_banks.lock().unwrap()[selected_index]
-                        .iter()
-                        .map(|b| format!("{:02X}", b))
-                        .collect();
-                }
+                    ui.label("ROM Bank: ");
+
+                    if egui::ComboBox::from_label("")
+                        .show_index(ui, &mut selected_index, 4, |i| {
+                            ["A", "B", "C", "D"][i].to_string()
+                        })
+                        .changed()
+                    {
+                        setter.begin_set_parameter(&params.rom_bank_select);
+                        setter.set_parameter(
+                            &params.rom_bank_select,
+                            RomBank::from_index(selected_index).unwrap(),
+                        );
+                        setter.end_set_parameter(&params.rom_bank_select);
+
+                        state.rom_bank = params.rom_banks.lock().unwrap()[selected_index]
+                            .iter()
+                            .map(|b| format!("{:04X}", b))
+                            .collect();
+                    }
+                });
 
                 ui.separator();
 
                 for row in 0..8 {
                     ui.horizontal_top(|ui| {
-                        ui.label(egui::RichText::from(format!("0x{:02X}", row * 8)).monospace());
+                        ui.label(egui::RichText::from(format!("0x{:02X}", row * 16)).monospace());
+
+                        ui.add_space(10.0);
 
                         for col in 0..8 {
                             let index = row * 8 + col;
 
                             SixFiveEditor::draw_rom_location(
                                 ui,
-                                instruction_pointer.lock().unwrap().clone() == index as u8,
+                                instruction_pointer.lock().unwrap().clone() == (index as u8 * 2),
                                 &mut state.rom_bank[index],
                                 &mut params.rom_banks.lock().unwrap()[selected_index][index],
                             )
                         }
+                    });
+                }
+            });
+        });
+    }
+
+    fn draw_ram(ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.vertical_centered_justified(|ui| {
+                // ui.horizontal(|ui| {
+                //     ui.label("RAM");
+                // });
+
+                // ui.separator();
+
+                for row in 0..2 {
+                    ui.horizontal_top(|ui| {
+                        ui.label(
+                            egui::RichText::from(format!("0x{:02X}", 0x80 + row * 16)).monospace(),
+                        );
+
+                        ui.add_space(15.0);
+
+                        for col in 0..16 {
+                            ui.label(egui::RichText::from(format!("00")).monospace());
+                        }
+
+                        ui.add_space(ui.available_width());
                     });
                 }
             });
@@ -262,24 +300,6 @@ impl SixFiveEditor {
     ) {
         ui.group(|ui| {
             ui.vertical_centered_justified(|ui| {
-                ui.horizontal_top(|ui| {
-                    ui.label("Instruction Pointer");
-                    ui.label(
-                        egui::RichText::from(format!(
-                            "0x{:02X}",
-                            instruction_pointer.lock().unwrap().clone()
-                        ))
-                        .monospace(),
-                    );
-                    ui.label("Clock Speed");
-                    ui.label(
-                        egui::RichText::from(format!("{} Hz", params.clock_speed.value()))
-                            .monospace(),
-                    );
-                });
-
-                ui.separator();
-
                 ui.horizontal_top(|ui| {
                     if ui.button("↺").clicked() {
                         *instruction_pointer.lock().unwrap() = 0;
@@ -297,6 +317,24 @@ impl SixFiveEditor {
                     if ui.button("⏸").clicked() {
                         *clock_running.lock().unwrap() = false;
                     }
+
+                    ui.add_space(20.0);
+
+                    ui.label("Instruction Pointer");
+                    ui.label(
+                        egui::RichText::from(format!(
+                            "0x{:02X}",
+                            instruction_pointer.lock().unwrap().clone()
+                        ))
+                        .monospace(),
+                    );
+                    ui.label("Clock Speed");
+                    ui.label(
+                        egui::RichText::from(format!("{} Hz", params.clock_speed.value()))
+                            .monospace(),
+                    );
+
+                    ui.add_space(ui.available_width());
                 });
             });
         });
@@ -305,16 +343,20 @@ impl SixFiveEditor {
     fn draw_overwrite_instruction_pointer(ui: &mut egui::Ui, instruction_pointer: &Arc<Mutex<u8>>) {
         ui.group(|ui| {
             ui.label("Overwrite Instruction Pointer");
-            ui.horizontal(|ui| {
-                for i in OVERWRITE_INSTRUCTION_POINTER_VALUES {
-                    if ui
-                        .button(egui::RichText::from(format!("0x{:02X}", i)).monospace())
-                        .clicked()
-                    {
-                        *instruction_pointer.lock().unwrap() = i;
+            for chunk in OVERWRITE_INSTRUCTION_POINTER_VALUES.chunks(4) {
+                ui.horizontal(|ui| {
+                    for i in chunk {
+                        if ui
+                            .button(egui::RichText::from(format!("0x{:02X}", i)).monospace())
+                            .clicked()
+                        {
+                            *instruction_pointer.lock().unwrap() = i.clone();
+                        }
                     }
-                }
-            })
+
+                    ui.add_space(ui.available_width());
+                });
+            }
         });
     }
 
@@ -324,8 +366,6 @@ impl SixFiveEditor {
             ui.horizontal(|ui| {
                 for (i, (off, on)) in TRAMPOLINE_VECTOR_JUMP_ADDRESSES.iter().enumerate() {
                     ui.vertical(|ui| {
-                        ui.label(format!(" 0x{:02X}", 0xFC + i));
-
                         let param = &params.trampoline_vectors[i].state;
 
                         let mut job = egui::text::LayoutJob::default();
@@ -363,8 +403,17 @@ impl SixFiveEditor {
                             setter.set_parameter(param, !param.value());
                             setter.end_set_parameter(param);
                         }
+
+                        ui.horizontal(|ui| {
+                            ui.add_space(5.0);
+                            ui.label(
+                                egui::RichText::from(format!("0x{:02X}", 0xFC + i)).monospace(),
+                            );
+                        })
                     });
                 }
+
+                ui.add_space(ui.available_width());
             })
         });
     }
@@ -380,7 +429,7 @@ impl SixFiveEditor {
 
                 if ui
                     .button(
-                        egui::RichText::new("Square 1").color(if square_wave_1_enable {
+                        egui::RichText::new("Pulse 1").color(if square_wave_1_enable {
                             egui::Color32::BLACK
                         } else {
                             egui::Color32::GRAY
@@ -395,7 +444,7 @@ impl SixFiveEditor {
 
                 if ui
                     .button(
-                        egui::RichText::new("Square 2").color(if square_wave_2_enable {
+                        egui::RichText::new("Pulse 2").color(if square_wave_2_enable {
                             egui::Color32::BLACK
                         } else {
                             egui::Color32::GRAY
@@ -409,13 +458,11 @@ impl SixFiveEditor {
                 }
 
                 if ui
-                    .button(
-                        egui::RichText::new("Triangle").color(if triangle_wave_enable {
-                            egui::Color32::BLACK
-                        } else {
-                            egui::Color32::GRAY
-                        }),
-                    )
+                    .button(egui::RichText::new("Tri").color(if triangle_wave_enable {
+                        egui::Color32::BLACK
+                    } else {
+                        egui::Color32::GRAY
+                    }))
                     .clicked()
                 {
                     setter.begin_set_parameter(&params.triangle_wave_enable);
@@ -435,7 +482,27 @@ impl SixFiveEditor {
                     setter.set_parameter(&params.noise_enable, !noise_enable);
                     setter.end_set_parameter(&params.noise_enable);
                 }
+
+                ui.add_space(ui.available_width());
             })
+        });
+    }
+
+    fn draw_register_view(ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.label("Register View");
+
+            ui.add_space(5.0);
+
+            ui.horizontal(|ui| {
+                ui.label("Accumulator");
+
+                ui.add_space(5.0);
+
+                ui.label(egui::RichText::from("0x00").monospace());
+
+                ui.add_space(ui.available_width());
+            });
         });
     }
 }
@@ -499,34 +566,34 @@ impl Plugin for SixFive {
                 egui_ctx.set_visuals(egui::Visuals::light());
 
                 egui::CentralPanel::default().show(egui_ctx, |ui| {
-                    ui.columns(2, |columns| {
-                        columns[0].vertical_centered_justified(|ui| {
-                            SixFiveEditor::draw_rom(
-                                ui,
-                                &params,
-                                setter,
-                                state,
-                                &instruction_pointer,
-                            );
+                    ui.vertical_centered_justified(|ui| {
+                        SixFiveEditor::draw_rom(ui, &params, setter, state, &instruction_pointer);
 
-                            SixFiveEditor::draw_instruction_pointer(
-                                ui,
-                                &params,
-                                setter,
-                                &instruction_pointer,
-                                &clock_running,
-                            );
-                        });
+                        SixFiveEditor::draw_ram(ui);
 
-                        columns[1].vertical_centered_justified(|ui| {
-                            SixFiveEditor::draw_overwrite_instruction_pointer(
-                                ui,
-                                &instruction_pointer,
-                            );
+                        SixFiveEditor::draw_instruction_pointer(
+                            ui,
+                            &params,
+                            setter,
+                            &instruction_pointer,
+                            &clock_running,
+                        );
 
-                            SixFiveEditor::draw_trampoline_vectors(ui, &params, setter);
+                        ui.columns(2, |columns| {
+                            columns[0].vertical(|ui| {
+                                SixFiveEditor::draw_overwrite_instruction_pointer(
+                                    ui,
+                                    &instruction_pointer,
+                                );
 
-                            SixFiveEditor::draw_enable_voices(ui, &params, setter);
+                                SixFiveEditor::draw_enable_voices(ui, &params, setter);
+                            });
+
+                            columns[1].vertical(|ui| {
+                                SixFiveEditor::draw_trampoline_vectors(ui, &params, setter);
+
+                                SixFiveEditor::draw_register_view(ui);
+                            });
                         });
                     });
                 });
@@ -546,7 +613,7 @@ impl Plugin for SixFive {
                 if self.samples_until_execute <= 0.0 {
                     // TODO: execute instruction
                     let mut ip = self.instruction_pointer.lock().unwrap();
-                    *ip = ip.wrapping_add(1);
+                    *ip = ip.wrapping_add(2);
 
                     self.samples_until_execute +=
                         (self.sample_rate as f64) / (self.params.clock_speed.value() as f64);
