@@ -232,7 +232,10 @@ fn draw_instruction_pointer(
                             setter.begin_set_parameter(&params.clock_speed);
                             setter.set_parameter(&params.clock_speed, value);
                             setter.end_set_parameter(&params.clock_speed);
+
                             *input = format!("{}", value);
+                        } else {
+                            *input = format!("{}", params.clock_speed.value());
                         }
                     }
                 });
