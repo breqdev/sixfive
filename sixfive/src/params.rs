@@ -94,7 +94,7 @@ impl SixFiveParams {
 impl Default for SixFiveParams {
     fn default() -> Self {
         Self {
-            editor_state: EguiState::from_size(450, 500),
+            editor_state: EguiState::from_size(900, 500),
 
             rom_bank_select: EnumParam::new("ROM Bank Selection", RomBank::A),
 

@@ -56,20 +56,20 @@ impl WaveGenerator for Noise {
 
 pub struct ChannelRegisters {
     // Register 0 (envelope)
-    duty_cycle: u8,
-    looping: bool,
-    envelope: bool,
-    envelope_period: u8, // constant volume, if envelope not used
+    pub duty_cycle: u8,
+    pub looping: bool,
+    pub envelope: bool,
+    pub envelope_length: u8, // constant volume, if envelope not used
 
     // Register 1 (shift unit)
-    shift_enabled: bool,
-    shift_period: u8,
-    shift_reverse: bool, // 0 = lengthen period / lower note, 1 = shorten period / higher note
-    shift_speed: u8,     // this value is exponential
+    pub shift_enabled: bool,
+    pub shift_period: u8,
+    pub shift_reverse: bool, // 0 = lengthen period / lower note, 1 = shorten period / higher note
+    pub shift_speed: u8,     // this value is exponential
 
     // Register 2, 3 (period, note length)
-    period: u16,
-    note_length: u8,
+    pub period: u16,
+    pub note_length: u8,
 }
 
 impl Default for ChannelRegisters {
@@ -78,7 +78,7 @@ impl Default for ChannelRegisters {
             duty_cycle: 0,
             looping: false,
             envelope: false,
-            envelope_period: 0,
+            envelope_length: 0,
             shift_enabled: false,
             shift_period: 0,
             shift_reverse: false,
@@ -91,10 +91,62 @@ impl Default for ChannelRegisters {
 
 impl ChannelRegisters {
     fn read(&self, register: u8) -> u8 {
-        0
+        match register {
+            0x00 => {
+                let mut value = 0;
+                value |= self.duty_cycle << 6;
+                value |= (self.looping as u8) << 5;
+                value |= (self.envelope as u8) << 4;
+                value |= self.envelope_length;
+                value
+            }
+            0x01 => {
+                let mut value = 0;
+                value |= (self.shift_enabled as u8) << 7;
+                value |= self.shift_period << 4;
+                value |= (self.shift_reverse as u8) << 3;
+                value |= self.shift_speed;
+                value
+            }
+            0x02 => {
+                let mut value = 0;
+                value |= self.period as u8;
+                value
+            }
+            0x03 => {
+                let mut value = 0;
+                value |= (self.period >> 8) as u8;
+                value |= self.note_length << 3;
+                value
+            }
+            _ => panic!("Read from invalid register: {:02X}", register),
+        }
     }
 
-    fn write(&mut self, register: u8, value: u8) {}
+    fn write(&mut self, register: u8, value: u8) {
+        match register {
+            0x00 => {
+                self.duty_cycle = (value >> 6) & 0b11;
+                self.looping = (value >> 5) & 0b1 == 1;
+                self.envelope = (value >> 4) & 0b1 == 1;
+                self.envelope_length = value & 0b1111;
+            }
+            0x01 => {
+                self.shift_enabled = (value >> 7) & 0b1 == 1;
+                self.shift_period = (value >> 4) & 0b111;
+                self.shift_reverse = (value >> 3) & 0b1 == 1;
+                self.shift_speed = value & 0b111;
+            }
+            0x02 => {
+                self.period = (self.period & 0b1111_0000_0000) | value as u16;
+            }
+            0x03 => {
+                self.period = (self.period & 0b0000_1111_1111) | ((value as u16) << 8);
+                self.note_length = (value >> 3) & 0b1111_1;
+            }
+            _ => panic!("Write to invalid register: {:02X}", register),
+        };
+    }
 }
 
 pub struct Channel<T: WaveGenerator> {
@@ -123,6 +175,10 @@ impl<T: WaveGenerator> Channel<T> {
     pub fn generate(&mut self) -> f32 {
         self.generator.generate(&mut self.registers)
     }
+
+    pub fn registers(&self) -> &ChannelRegisters {
+        &self.registers
+    }
 }
 
 pub struct SoundChip {
@@ -145,10 +201,24 @@ impl Default for SoundChip {
 
 impl SoundChip {
     pub fn read(&self, register: u8) -> u8 {
-        0
+        match register {
+            0xA0..=0xA3 => self.square_wave_1.read(register - 0xA0),
+            0xA4..=0xA7 => self.square_wave_2.read(register - 0xA4),
+            0xA8..=0xAB => self.triangle_wave.read(register - 0xA8),
+            0xAC..=0xAF => self.noise.read(register - 0xAC),
+            _ => panic!("Read from invalid sound register: {:02X}", register),
+        }
     }
 
-    pub fn write(&mut self, register: u8, value: u8) {}
+    pub fn write(&mut self, register: u8, value: u8) {
+        match register {
+            0xA0..=0xA3 => self.square_wave_1.write(register - 0xA0, value),
+            0xA4..=0xA7 => self.square_wave_2.write(register - 0xA4, value),
+            0xA8..=0xAB => self.triangle_wave.write(register - 0xA8, value),
+            0xAC..=0xAF => self.noise.write(register - 0xAC, value),
+            _ => panic!("Write to invalid sound register: {:02X}", register),
+        }
+    }
 
     pub fn generate(&mut self) -> f32 {
         // Taken from https://www.nesdev.org/wiki/APU_Mixer#Linear_Approximation

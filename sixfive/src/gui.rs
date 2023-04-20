@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use crate::{
     cpu::Cpu,
     params::{RomBank, SixFiveParams},
+    sound::ChannelRegisters,
 };
 
 const OVERWRITE_INSTRUCTION_POINTER_VALUES: [u8; 8] =
@@ -150,13 +151,9 @@ fn draw_ram(ui: &mut egui::Ui, cpu: &Cpu) {
             }
         });
     });
-}
 
-fn draw_audio_registers(ui: &mut egui::Ui, cpu: &Cpu) {
     ui.group(|ui| {
         ui.vertical_centered_justified(|ui| {
-            // TODO: register-specific readouts
-
             ui.horizontal_top(|ui| {
                 ui.label(egui::RichText::from("0xA0").monospace());
 
@@ -173,6 +170,177 @@ fn draw_audio_registers(ui: &mut egui::Ui, cpu: &Cpu) {
             });
         });
     });
+}
+
+fn draw_audio_register(ui: &mut egui::Ui, registers: &ChannelRegisters) {
+    ui.vertical_centered_justified(|ui| {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label("↔");
+                ui.label(egui::RichText::from(format!("{:02b}", registers.duty_cycle)).monospace());
+                ui.label(
+                    egui::RichText::from(match registers.duty_cycle {
+                        0 => "12%",
+                        1 => "25%",
+                        2 => "50%",
+                        3 => "75%",
+                        _ => panic!("Unknown duty cycle {}!", registers.duty_cycle),
+                    })
+                    .monospace()
+                    .small(),
+                );
+            });
+
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::from("🔁").small());
+                ui.label(egui::RichText::from(format!("{}", registers.looping as u8)).monospace());
+                ui.label(egui::RichText::from(if registers.looping { "✔" } else { "🗙" }).small());
+            });
+
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::from("✉").small());
+                ui.label(egui::RichText::from(format!("{}", registers.envelope as u8)).monospace());
+                ui.label(egui::RichText::from(if registers.envelope { "✔" } else { "🗙" }).small());
+            });
+
+            ui.vertical(|ui| {
+                ui.label("🔊");
+                ui.label(
+                    egui::RichText::from(format!("{:04b}", registers.envelope_length)).monospace(),
+                );
+                ui.label(
+                    egui::RichText::from(format!(
+                        "{:.03}s",
+                        registers.envelope_length as f64 * (1.0 / 15.0)
+                    ))
+                    .monospace()
+                    .small(),
+                );
+            });
+        });
+
+        ui.separator();
+
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::from("↕").small());
+                ui.label(
+                    egui::RichText::from(format!("{}", registers.shift_enabled as u8)).monospace(),
+                );
+                ui.label(
+                    egui::RichText::from(if registers.shift_enabled {
+                        "✔"
+                    } else {
+                        "🗙"
+                    })
+                    .small(),
+                );
+            });
+
+            ui.vertical(|ui| {
+                ui.label("↔");
+                ui.label(
+                    egui::RichText::from(format!("{:03b}", registers.shift_period)).monospace(),
+                );
+                ui.label(
+                    egui::RichText::from(format!(
+                        "{:.03}s",
+                        registers.shift_period as f64 * (1.0 / 120.0)
+                    ))
+                    .monospace()
+                    .small(),
+                );
+            });
+
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::from("↕").small());
+                ui.label(
+                    egui::RichText::from(format!("{}", registers.shift_reverse as u8)).monospace(),
+                );
+                ui.label(
+                    egui::RichText::from(if !registers.shift_reverse {
+                        "⬆"
+                    } else {
+                        "⬇"
+                    })
+                    .small(),
+                );
+            });
+
+            ui.vertical(|ui| {
+                ui.label("⏩");
+                ui.label(
+                    egui::RichText::from(format!("{:03b}", registers.shift_speed as u8))
+                        .monospace(),
+                );
+                ui.label(
+                    egui::RichText::from(match registers.shift_speed {
+                        0b000 => "1/  1",
+                        0b001 => "1/  2",
+                        0b010 => "1/  4",
+                        0b011 => "1/  8",
+                        0b100 => "1/ 16",
+                        0b101 => "1/ 32",
+                        0b110 => "1/ 64",
+                        0b111 => "1/128",
+                        _ => panic!("Unknown shift speed {}!", registers.shift_speed),
+                    })
+                    .monospace()
+                    .small(),
+                )
+            });
+        });
+
+        ui.separator();
+
+        ui.label(
+            egui::RichText::from(format!(
+                "🎵 {:.01}Hz",
+                1789773.0 / (16.0 * (registers.period as f32 + 1.0))
+            ))
+            .monospace(),
+        );
+        ui.label(
+            egui::RichText::from(format!(
+                "{:03b} {:08b}",
+                registers.period & 0x0700 >> 8,
+                registers.period & 0x00FF
+            ))
+            .monospace(),
+        );
+
+        ui.separator();
+
+        ui.label(
+            egui::RichText::from(format!(
+                "⏱ {:.03}s",
+                registers.note_length as f64 * (1.0 / 60.0)
+            ))
+            .monospace(),
+        );
+        ui.label(egui::RichText::from(format!("{:05b}", registers.note_length)).monospace());
+    });
+}
+
+fn draw_audio_registers(ui: &mut egui::Ui, cpu: &Cpu) {
+    ui.columns(4, |columns| {
+        columns[0].group(|ui| {
+            ui.label("Square Wave 1");
+            draw_audio_register(ui, cpu.sound.square_wave_1.registers());
+        });
+        columns[1].group(|ui| {
+            ui.label("Square Wave 2");
+            draw_audio_register(ui, cpu.sound.square_wave_2.registers());
+        });
+        columns[2].group(|ui| {
+            ui.label("Triangle Wave");
+            draw_audio_register(ui, cpu.sound.triangle_wave.registers());
+        });
+        columns[3].group(|ui| {
+            ui.label("Noise");
+            draw_audio_register(ui, cpu.sound.noise.registers());
+        });
+    })
 }
 
 fn draw_instruction_pointer(
@@ -421,18 +589,22 @@ pub fn draw_editor(
             egui_ctx.set_visuals(egui::Visuals::light());
 
             egui::CentralPanel::default().show(egui_ctx, |ui| {
-                ui.vertical_centered_justified(|ui| {
-                    let mut cpu = cpu.lock().unwrap();
+                let mut cpu = cpu.lock().unwrap();
 
-                    draw_rom(ui, &params, setter, state, &cpu);
+                ui.columns(2, |columns| {
+                    draw_rom(&mut columns[0], &params, setter, state, &cpu);
+                    draw_ram(&mut columns[0], &cpu);
+                    draw_instruction_pointer(
+                        &mut columns[0],
+                        &params,
+                        setter,
+                        &mut cpu,
+                        &mut state.clock_speed,
+                    );
 
-                    draw_ram(ui, &cpu);
+                    draw_audio_registers(&mut columns[1], &cpu);
 
-                    draw_audio_registers(ui, &cpu);
-
-                    draw_instruction_pointer(ui, &params, setter, &mut cpu, &mut state.clock_speed);
-
-                    ui.columns(2, |columns| {
+                    columns[1].columns(2, |columns| {
                         columns[0].vertical(|ui| {
                             draw_overwrite_instruction_pointer(ui, &mut cpu);
 
