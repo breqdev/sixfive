@@ -8,6 +8,9 @@ pub struct SixFive {
 
     instruction_pointer: Arc<Mutex<u8>>,
     clock_running: Arc<Mutex<bool>>,
+    accumulator: Arc<Mutex<u8>>,
+    ram: Arc<Mutex<[u8; 0x20]>>,
+    audio_registers: Arc<Mutex<[u8; 0x10]>>, // TODO: better internal structure for this?
 
     samples_until_execute: f64,
 }
@@ -98,6 +101,9 @@ impl Default for SixFive {
 
             instruction_pointer: Arc::new(Mutex::new(0)),
             clock_running: Arc::new(Mutex::new(false)),
+            accumulator: Arc::new(Mutex::new(0)),
+            ram: Arc::new(Mutex::new([0; 0x20])),
+            audio_registers: Arc::new(Mutex::new([0; 0x10])),
 
             samples_until_execute: 0.0,
         }
@@ -169,7 +175,7 @@ const TRAMPOLINE_VECTOR_JUMP_ADDRESSES: [(u8, u8); 4] =
 struct SixFiveEditor;
 
 impl SixFiveEditor {
-    fn draw_rom_location(ui: &mut egui::Ui, active: bool, input: &mut String, value: &mut u16) {
+    fn draw_rom_location(ui: &mut egui::Ui, active: bool, input: &mut String, mut value: &mut u16) {
         egui::Frame::none()
             .stroke(egui::Stroke::new(
                 2.0,
@@ -263,30 +269,55 @@ impl SixFiveEditor {
         });
     }
 
-    fn draw_ram(ui: &mut egui::Ui) {
+    fn draw_ram(ui: &mut egui::Ui, ram_bank: &Arc<Mutex<[u8; 0x20]>>) {
         ui.group(|ui| {
             ui.vertical_centered_justified(|ui| {
-                // ui.horizontal(|ui| {
-                //     ui.label("RAM");
-                // });
-
-                // ui.separator();
+                let ram = ram_bank.lock().unwrap();
 
                 for row in 0..2 {
                     ui.horizontal_top(|ui| {
                         ui.label(
-                            egui::RichText::from(format!("0x{:02X}", 0x80 + row * 16)).monospace(),
+                            egui::RichText::from(format!("0x{:02X}", 0x80 + row * 0x10))
+                                .monospace(),
                         );
 
                         ui.add_space(15.0);
 
                         for col in 0..16 {
-                            ui.label(egui::RichText::from(format!("00")).monospace());
+                            ui.label(
+                                egui::RichText::from(format!("{:02X}", ram[row * 0x10 + col]))
+                                    .monospace(),
+                            );
                         }
 
                         ui.add_space(ui.available_width());
                     });
                 }
+            });
+        });
+    }
+
+    fn draw_audio_registers(ui: &mut egui::Ui, audio_registers: &Arc<Mutex<[u8; 0x10]>>) {
+        ui.group(|ui| {
+            ui.vertical_centered_justified(|ui| {
+                // TODO: register-specific readouts
+
+                ui.horizontal_top(|ui| {
+                    ui.label(egui::RichText::from("0xA0").monospace());
+
+                    ui.add_space(15.0);
+
+                    let audio_registers = audio_registers.lock().unwrap();
+
+                    for col in 0..16 {
+                        ui.label(
+                            egui::RichText::from(format!("{:02X}", audio_registers[col]))
+                                .monospace(),
+                        );
+                    }
+
+                    ui.add_space(ui.available_width());
+                });
             });
         });
     }
@@ -556,6 +587,8 @@ impl Plugin for SixFive {
     fn editor(&self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         let params = self.params.clone();
         let instruction_pointer = self.instruction_pointer.clone();
+        let ram_bank = self.ram.clone();
+        let audio_registers = self.audio_registers.clone();
         let clock_running = self.clock_running.clone();
 
         create_egui_editor(
@@ -569,7 +602,9 @@ impl Plugin for SixFive {
                     ui.vertical_centered_justified(|ui| {
                         SixFiveEditor::draw_rom(ui, &params, setter, state, &instruction_pointer);
 
-                        SixFiveEditor::draw_ram(ui);
+                        SixFiveEditor::draw_ram(ui, &ram_bank);
+
+                        SixFiveEditor::draw_audio_registers(ui, &audio_registers);
 
                         SixFiveEditor::draw_instruction_pointer(
                             ui,
