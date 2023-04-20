@@ -1,4 +1,4 @@
-use nih_plug::{editor, prelude::*};
+use nih_plug::prelude::*;
 use nih_plug_egui::{create_egui_editor, egui, EguiState};
 use std::sync::{Arc, Mutex};
 
@@ -14,12 +14,21 @@ const TRAMPOLINE_VECTOR_JUMP_ADDRESSES: [(u8, u8); 4] =
 
 struct GuiUserState {
     rom_bank: Vec<String>,
+    clock_speed: String,
 }
 
-impl Default for GuiUserState {
-    fn default() -> Self {
+impl GuiUserState {
+    fn new(params: &Arc<SixFiveParams>) -> Self {
+        let mut rom_bank = Vec::new();
+        for i in 0x00..0x40 {
+            let high = params.read_rom(i * 2) as u16;
+            let low = params.read_rom(i * 2 + 1) as u16;
+            rom_bank.push(format!("{:04X}", (high << 8) | low));
+        }
+
         Self {
-            rom_bank: vec!["0000".to_string(); 64],
+            rom_bank,
+            clock_speed: params.clock_speed.value().to_string(),
         }
     }
 }
@@ -174,6 +183,7 @@ fn draw_instruction_pointer(
     params: &SixFiveParams,
     setter: &ParamSetter,
     cpu: &mut Cpu,
+    input: &mut String,
 ) {
     ui.group(|ui| {
         ui.vertical_centered_justified(|ui| {
@@ -202,9 +212,30 @@ fn draw_instruction_pointer(
                     egui::RichText::from(format!("0x{:02X}", cpu.instruction_pointer)).monospace(),
                 );
                 ui.label("Clock Speed");
-                ui.label(
-                    egui::RichText::from(format!("{} Hz", params.clock_speed.value())).monospace(),
-                );
+
+                egui::Frame::default().show(ui, |ui| {
+                    let response = ui.add(
+                        egui::TextEdit::singleline(input)
+                            .font(egui::TextStyle::Monospace)
+                            .desired_width(30.0)
+                            .frame(false),
+                    );
+
+                    if response.gained_focus() {
+                        *input = "".to_string();
+                    }
+
+                    if response.lost_focus() {
+                        if ui.input().key_pressed(egui::Key::Enter) {
+                            let value = input.parse().unwrap();
+
+                            setter.begin_set_parameter(&params.clock_speed);
+                            setter.set_parameter(&params.clock_speed, value);
+                            setter.end_set_parameter(&params.clock_speed);
+                            *input = format!("{}", value);
+                        }
+                    }
+                });
 
                 ui.add_space(ui.available_width());
             });
@@ -384,7 +415,7 @@ pub fn draw_editor(
 ) -> Option<Box<dyn Editor>> {
     create_egui_editor(
         editor_state,
-        GuiUserState::default(),
+        GuiUserState::new(&params),
         |_, _| {},
         move |egui_ctx, setter, state| {
             egui_ctx.set_visuals(egui::Visuals::light());
@@ -399,7 +430,7 @@ pub fn draw_editor(
 
                     draw_audio_registers(ui, &cpu);
 
-                    draw_instruction_pointer(ui, &params, setter, &mut cpu);
+                    draw_instruction_pointer(ui, &params, setter, &mut cpu, &mut state.clock_speed);
 
                     ui.columns(2, |columns| {
                         columns[0].vertical(|ui| {
