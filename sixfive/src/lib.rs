@@ -112,7 +112,7 @@ impl Plugin for SixFive {
                     self.samples_until_execute = 0.0;
                 }
 
-                cpu.sound.generate()
+                cpu.sound.generate(self.sample_rate as f64)
             };
 
             for sample in channel_samples {

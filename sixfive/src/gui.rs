@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use crate::{
     cpu::Cpu,
     params::{RomBank, SixFiveParams},
-    sound::ChannelRegisters,
+    sound::{conversions, ChannelRegisters},
 };
 
 const OVERWRITE_INSTRUCTION_POINTER_VALUES: [u8; 8] =
@@ -211,7 +211,7 @@ fn draw_audio_register(ui: &mut egui::Ui, registers: &ChannelRegisters) {
                 ui.label(
                     egui::RichText::from(format!(
                         "{:.03}s",
-                        registers.envelope_length as f64 * (1.0 / 15.0)
+                        conversions::envelope_length_to_seconds(registers.envelope_length)
                     ))
                     .monospace()
                     .small(),
@@ -296,14 +296,14 @@ fn draw_audio_register(ui: &mut egui::Ui, registers: &ChannelRegisters) {
         ui.label(
             egui::RichText::from(format!(
                 "🎵 {:.01}Hz",
-                1789773.0 / (16.0 * (registers.period as f32 + 1.0))
+                1.0 / conversions::note_period_to_seconds(registers.period)
             ))
             .monospace(),
         );
         ui.label(
             egui::RichText::from(format!(
                 "{:03b} {:08b}",
-                registers.period & 0x0700 >> 8,
+                (registers.period & 0x0700) >> 8,
                 registers.period & 0x00FF
             ))
             .monospace(),
@@ -314,7 +314,7 @@ fn draw_audio_register(ui: &mut egui::Ui, registers: &ChannelRegisters) {
         ui.label(
             egui::RichText::from(format!(
                 "⏱ {:.03}s",
-                registers.note_length as f64 * (1.0 / 60.0)
+                conversions::note_length_to_seconds(registers.note_length)
             ))
             .monospace(),
         );

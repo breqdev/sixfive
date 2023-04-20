@@ -1,56 +1,20 @@
-pub trait WaveGenerator: Default {
-    fn generate(&mut self, registers: &mut ChannelRegisters) -> f32;
-}
+const CHANNEL_MAX_VOLUME: f32 = 15.0;
 
-pub struct SquareWave {}
-
-impl Default for SquareWave {
-    fn default() -> Self {
-        Self {}
+pub mod conversions {
+    pub fn note_period_to_seconds(period: u16) -> f64 {
+        //  fCPU / (16 × (t + 1))
+        // TODO: We probably don't exactly have to match the NES here
+        // (we might as well pick something easier to work with)
+        let frequency = 1789773.0 / (16.0 * (period as f64 + 1.0));
+        1.0 / frequency
     }
-}
 
-impl WaveGenerator for SquareWave {
-    fn generate(&mut self, registers: &mut ChannelRegisters) -> f32 {
-        0.0
+    pub fn note_length_to_seconds(length: u8) -> f64 {
+        (length as f64) * 1.0 / 60.0 // TODO: this doesn't match NES (uses a lookup table). Do something similar?
     }
-}
 
-pub struct TriangleWave {}
-
-impl Default for TriangleWave {
-    fn default() -> Self {
-        Self {}
-    }
-}
-
-impl WaveGenerator for TriangleWave {
-    fn generate(&mut self, registers: &mut ChannelRegisters) -> f32 {
-        0.0
-    }
-}
-
-pub struct Noise {
-    shift_register: u16,
-}
-
-impl Default for Noise {
-    fn default() -> Self {
-        Self { shift_register: 1 }
-    }
-}
-
-impl WaveGenerator for Noise {
-    fn generate(&mut self, registers: &mut ChannelRegisters) -> f32 {
-        let feedback = (self.shift_register & 0b1) ^ ((self.shift_register >> 1) & 0b1);
-        self.shift_register >>= 1;
-        self.shift_register |= feedback << 14;
-
-        if feedback == 0 {
-            1.0
-        } else {
-            0.0
-        }
+    pub fn envelope_length_to_seconds(length: u8) -> f64 {
+        (length as f64) * 1.0 / 15.0
     }
 }
 
@@ -70,6 +34,9 @@ pub struct ChannelRegisters {
     // Register 2, 3 (period, note length)
     pub period: u16,
     pub note_length: u8,
+
+    // Internal registers
+    time_since_note: f64,
 }
 
 impl Default for ChannelRegisters {
@@ -85,6 +52,8 @@ impl Default for ChannelRegisters {
             shift_speed: 0,
             period: 0,
             note_length: 0,
+
+            time_since_note: 0.0,
         }
     }
 }
@@ -138,14 +107,141 @@ impl ChannelRegisters {
                 self.shift_speed = value & 0b111;
             }
             0x02 => {
-                self.period = (self.period & 0b1111_0000_0000) | value as u16;
+                self.period = (self.period & 0b111_0000_0000) | value as u16;
             }
             0x03 => {
-                self.period = (self.period & 0b0000_1111_1111) | ((value as u16) << 8);
+                self.period = (self.period & 0b000_1111_1111) | (((value & 0b0111) as u16) << 8);
                 self.note_length = (value >> 3) & 0b1111_1;
+                self.time_since_note = 0.0;
             }
             _ => panic!("Write to invalid register: {:02X}", register),
         };
+    }
+
+    fn tick(&mut self, sample_rate: f64) {
+        self.time_since_note += 1.0 / sample_rate;
+    }
+
+    fn get_effective_volume(&self) -> f32 {
+        // Are we outside a note?
+        if self.time_since_note > conversions::note_length_to_seconds(self.note_length) {
+            return 0.0;
+        }
+
+        // Is the envelope active?
+        if self.envelope {
+            let elapsed = self.time_since_note;
+            let total = conversions::envelope_length_to_seconds(self.envelope_length);
+            let relative = (elapsed % total) / total;
+            let relative = 1.0 - relative;
+
+            return relative as f32;
+        }
+
+        // Otherwise, use the constant volume
+        self.envelope_length as f32 / CHANNEL_MAX_VOLUME
+    }
+}
+
+pub trait WaveGenerator: Default {
+    fn generate(&mut self, registers: &mut ChannelRegisters, sample_rate: f64) -> f32;
+}
+
+pub struct SquareWave {}
+
+impl Default for SquareWave {
+    fn default() -> Self {
+        Self {}
+    }
+}
+
+impl WaveGenerator for SquareWave {
+    fn generate(&mut self, registers: &mut ChannelRegisters, sample_rate: f64) -> f32 {
+        let elapsed = registers.time_since_note;
+        let period = conversions::note_period_to_seconds(registers.period);
+        let relative = (elapsed % period) / period;
+
+        let value = match registers.duty_cycle {
+            0b00 => {
+                if relative < 0.125 {
+                    0.0
+                } else {
+                    1.0
+                }
+            }
+            0b01 => {
+                if relative < 0.25 {
+                    0.0
+                } else {
+                    1.0
+                }
+            }
+            0b10 => {
+                if relative < 0.5 {
+                    0.0
+                } else {
+                    1.0
+                }
+            }
+            0b11 => {
+                if relative < 0.75 {
+                    0.0
+                } else {
+                    1.0
+                }
+            }
+            _ => panic!("Invalid duty cycle: {}", registers.duty_cycle),
+        };
+
+        value * registers.get_effective_volume()
+    }
+}
+
+pub struct TriangleWave {}
+
+impl Default for TriangleWave {
+    fn default() -> Self {
+        Self {}
+    }
+}
+
+impl WaveGenerator for TriangleWave {
+    fn generate(&mut self, registers: &mut ChannelRegisters, sample_rate: f64) -> f32 {
+        let elapsed = registers.time_since_note;
+        let period = conversions::note_period_to_seconds(registers.period);
+        let relative = (elapsed % period) / period;
+
+        let value = if relative < 0.5 {
+            (relative * 2.0) as f32
+        } else {
+            ((1.0 - relative) * 2.0) as f32
+        };
+
+        value * registers.get_effective_volume()
+    }
+}
+
+pub struct Noise {
+    shift_register: u16,
+}
+
+impl Default for Noise {
+    fn default() -> Self {
+        Self { shift_register: 1 }
+    }
+}
+
+impl WaveGenerator for Noise {
+    fn generate(&mut self, registers: &mut ChannelRegisters, sample_rate: f64) -> f32 {
+        let feedback = (self.shift_register & 0b1) ^ ((self.shift_register >> 1) & 0b1);
+        self.shift_register >>= 1;
+        self.shift_register |= feedback << 14;
+
+        if feedback == 0 {
+            1.0 * registers.get_effective_volume()
+        } else {
+            0.0
+        }
     }
 }
 
@@ -172,8 +268,9 @@ impl<T: WaveGenerator> Channel<T> {
         self.registers.write(register, value)
     }
 
-    pub fn generate(&mut self) -> f32 {
-        self.generator.generate(&mut self.registers)
+    pub fn generate(&mut self, sample_rate: f64) -> f32 {
+        self.registers.tick(sample_rate);
+        self.generator.generate(&mut self.registers, sample_rate)
     }
 
     pub fn registers(&self) -> &ChannelRegisters {
@@ -220,12 +317,12 @@ impl SoundChip {
         }
     }
 
-    pub fn generate(&mut self) -> f32 {
+    pub fn generate(&mut self, sample_rate: f64) -> f32 {
         // Taken from https://www.nesdev.org/wiki/APU_Mixer#Linear_Approximation
         // Note that the * 16 is because our generate() calls return from 0.0 - 1.0, not 0 - 15
-        (0.00376 * 16.0) * self.square_wave_1.generate()
-            + (0.00376 * 16.0) * self.square_wave_2.generate()
-            + (0.00851 * 16.0) * self.triangle_wave.generate()
-            + (0.00494 * 16.0) * self.noise.generate()
+        (0.00376 * 16.0) * self.square_wave_1.generate(sample_rate)
+            + (0.00376 * 16.0) * self.square_wave_2.generate(sample_rate)
+            + (0.00851 * 16.0) * self.triangle_wave.generate(sample_rate)
+            + (0.00494 * 16.0) * self.noise.generate(sample_rate)
     }
 }
