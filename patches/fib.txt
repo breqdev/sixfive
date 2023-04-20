@@ -1,0 +1,83 @@
+; Fibonacci numbers are placed in 0x80, 0x81, ..., 0x8F
+
+; Between iterations:
+; RAM address 0x90 stores the lagging fibonacci number, 0x91 stores the leading fibonacci number
+; RAM address 0x92 is used to store the sum being computed
+
+
+; RAM address 0x9F stores the offset to write the next number in (that is, starting at 0x80 and increasing)
+
+        00   02   04   06   08   0A   0C   0E
+0x00: 1080 129F 1001 1290 1291 4010 0000
+0x10: 1190 2191 1292 139F 1191 1290 1192 1291
+0x20: 119F 2001 268F 3030 129F 4010 0000
+0x30: 0000
+
+; Setup work
+; 0x00
+
+; Set up the offset to write to
+1080  LOAD #$80
+129F  STOR $9F
+
+; Set up the initial numbers by putting 1 in both
+1001  LOAD #$01
+1290  STOR $90
+1291  STOR $91
+
+4010  JUMP $10
+
+; Perform each iteration
+; 0x10
+
+; Compute the sum
+1190  LOAD $90
+2191  ADD  $91
+1292  STOR $92
+
+; Write the sum to the output list
+139F  STOR ($9F)
+
+; Bump the numbers down
+1191  LOAD $91
+1290  STOR $90
+1192  LOAD $92
+1291  STOR $91
+
+; Increment the offset
+119F  LOAD $9F
+2001  ADD  #$01
+; Are we too far along?
+268F  CMP  #$8F
+3030  BREQ $30
+
+129F  STOR $9F
+4010  JUMP $10
+
+
+; Halt here when we're done
+; 0x30
+0000  HALT #$00
+
+
+
+
+LDX #$01; x = 1
+STX $00; stores x
+
+SEC; clean carry;
+LDY #$07; calculates 7th fibonacci number (13 = D in hex) (CHANGE HERE IF YOU WANT TO CALCULATE ANOTHER NUMBER)
+TYA; transfer y register to accumulator
+SBC #$03; handles the algorithm iteration counting
+TAY; transfer the accumulator to the y register
+
+CLC; clean carry
+LDA #$02; a = 2
+STA $01; stores a
+
+loop: LDX $01; x = a
+      ADC $00; a += x
+      STA $01; stores a
+      STX $00; stores x
+      DEY; y -= 1
+      BNE loop; jumps back to loop if Z bit != 0 (y's decremention isn't zero yet)

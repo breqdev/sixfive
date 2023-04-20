@@ -2,15 +2,291 @@ use nih_plug::prelude::*;
 use nih_plug_egui::{create_egui_editor, egui, EguiState};
 use std::sync::{Arc, Mutex};
 
+struct Cpu {
+    pub accumulator: u8,
+    pub instruction_pointer: u8,
+    pub status_register: (bool, bool),
+
+    pub clock_running: bool,
+    pub beats_waiting: u8,
+    pub cycles_waiting: u8,
+
+    pub memory: Memory,
+    pub params: Arc<SixFiveParams>,
+}
+
+impl Cpu {
+    fn new(params: &Arc<SixFiveParams>) -> Self {
+        Self {
+            accumulator: 0,
+            instruction_pointer: 0,
+            status_register: (false, false),
+
+            clock_running: false,
+            beats_waiting: 0,
+            cycles_waiting: 0,
+
+            memory: Memory::default(),
+            params: params.clone(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.instruction_pointer = 0;
+        self.accumulator = 0;
+        self.status_register = (false, false);
+        self.memory = Memory::default();
+    }
+
+    fn set_status_register(&mut self, value: u8) {
+        self.status_register = (value == 0, value & 0b1000_0000 != 0)
+    }
+
+    fn read(&mut self, address: u8) -> u8 {
+        match address {
+            0x00..=0x7F => self.params.read_rom(address),
+            0x80..=0x9F => self.memory.ram[address as usize - 0x80],
+            0xA0..=0xAF => self.memory.audio[address as usize - 0xA0],
+            0xB0..=0xEF => panic!("unimplemented memory read"),
+            0xF0..=0xFF => self.params.read_trampoline_vector(address),
+        }
+    }
+
+    fn write(&mut self, address: u8, value: u8) {
+        println!("writing {:02X} to {:02X}", value, address);
+        match address {
+            0x00..=0x7F => panic!("ROM not writable"),
+            0x80..=0x9F => self.memory.ram[address as usize - 0x80] = value,
+            0xA0..=0xAF => self.memory.audio[address as usize - 0xA0] = value,
+            0xB0..=0xEF => panic!("unimplemented memory write"),
+            0xF0..=0xFF => panic!("trampoline vectors not writable"),
+        }
+    }
+
+    fn execute(&mut self) {
+        if self.cycles_waiting > 0 {
+            self.cycles_waiting -= 1;
+            return;
+        }
+
+        let opcode = self.read(self.instruction_pointer);
+
+        // The last bit of the opcode determines the addressing mode:
+        // 0: immediate
+        // 1: absolute
+
+        // With the exception of 0xA0..=0xAF, which are always immediate
+        // And 0xB0..=0xBF, which are always absolute
+        // (so that the last 4 bits of the instruction match the last 4 bits of the address being written)
+        let operand = match opcode {
+            0xA0..=0xAF => self.read(self.instruction_pointer.wrapping_add(1)),
+            0xB0..=0xBF => {
+                let address = self.read(self.instruction_pointer.wrapping_add(1));
+                self.read(address)
+            }
+            _ => {
+                if opcode & 0b0000_0001 == 0 {
+                    self.read(self.instruction_pointer.wrapping_add(1))
+                } else {
+                    let address = self.read(self.instruction_pointer.wrapping_add(1));
+                    self.read(address)
+                }
+            }
+        };
+
+        println!(
+            "{:02X}: {:02X} ({:02X})",
+            self.instruction_pointer, opcode, operand
+        );
+
+        // we update this now in order to avoid messing up jumps
+        self.instruction_pointer = self.instruction_pointer.wrapping_add(2);
+
+        match opcode {
+            // Halt
+            0x00 | 0x01 => {
+                // HALT
+                self.clock_running = false;
+            }
+
+            // Loading and Storing
+            0x10 | 0x11 => {
+                // LOAD
+                self.accumulator = operand;
+                self.set_status_register(self.accumulator);
+            }
+            0x12 | 0x13 => {
+                // STOR
+                self.write(operand, self.accumulator);
+                self.set_status_register(self.accumulator);
+            }
+
+            // Arithmetic
+
+            // Add
+            0x20 | 0x21 => {
+                // ADD
+                self.accumulator = self.accumulator.wrapping_add(operand);
+                self.set_status_register(self.accumulator);
+            }
+
+            // Set Status Register With Value
+            0x22 | 0x23 => {
+                // SSR
+                self.set_status_register(operand);
+            }
+
+            // Subtraction
+            0x24 | 0x25 => {
+                // SUB
+                self.set_status_register(self.accumulator);
+            }
+
+            // Comparison
+            0x26 | 0x27 => {
+                // CMP
+                let value = self.accumulator.wrapping_sub(operand);
+                self.set_status_register(value);
+            }
+
+            // Branching
+            0x30 | 0x31 => {
+                // BREQ
+                if self.status_register.0 {
+                    self.instruction_pointer = operand;
+                }
+            }
+            0x32 | 0x33 => {
+                // BRNE
+                if !self.status_register.0 {
+                    self.instruction_pointer = operand;
+                }
+            }
+            0x34 | 0x35 => {
+                // BRLT
+                if self.status_register.1 {
+                    self.instruction_pointer = operand;
+                }
+            }
+            0x36 | 0x37 => {
+                // BRGE
+                if !self.status_register.1 {
+                    self.instruction_pointer = operand;
+                }
+            }
+
+            // Jumping
+            0x40 | 0x41 => {
+                // JMP
+                self.instruction_pointer = operand;
+            }
+
+            // Bitwise
+            0x50 | 0x51 => {
+                // AND
+                self.accumulator = self.accumulator & operand;
+                self.set_status_register(self.accumulator);
+            }
+            0x52 | 0x53 => {
+                // BIT
+                let value = self.accumulator & operand;
+                self.set_status_register(value);
+            }
+            0x54 | 0x55 => {
+                // OR
+                self.accumulator = self.accumulator | operand;
+                self.set_status_register(self.accumulator);
+            }
+            0x56 | 0x57 => {
+                // XOR
+                self.accumulator = self.accumulator ^ operand;
+                self.set_status_register(self.accumulator);
+            }
+            0x58 | 0x59 => {
+                // LSL
+                self.accumulator = self.accumulator << operand;
+                self.set_status_register(self.accumulator);
+            }
+            0x5A | 0x5B => {
+                // LSR
+                self.accumulator = self.accumulator >> operand;
+                self.set_status_register(self.accumulator);
+            }
+            0x5C | 0x5D => {
+                // ROL
+                self.accumulator = self.accumulator.rotate_left(operand as u32);
+                self.set_status_register(self.accumulator);
+            }
+            0x5E | 0x5F => {
+                // ROR
+                self.accumulator = self.accumulator.rotate_right(operand as u32);
+                self.set_status_register(self.accumulator);
+            }
+
+            // Operations directly on memory
+            0x60 | 0x61 => {
+                // ZERO
+                self.write(operand, 0);
+                self.set_status_register(0);
+            }
+            0x62 | 0x63 => {
+                // INC
+                let value = self.read(operand).wrapping_add(1);
+                self.write(operand, value);
+                self.set_status_register(value);
+            }
+            0x64 | 0x65 => {
+                // DEC
+                let value = self.read(operand).wrapping_sub(1);
+                self.write(operand, value);
+                self.set_status_register(value);
+            }
+
+            // Audio Register Manipulation
+            0xA0..=0xAF | 0xB0..=0xBF => {
+                // AWI0 ... AWIF
+                let index = (opcode & 0x0F) as usize;
+                self.memory.audio[index] = operand;
+            }
+
+            // No-ops and Waits
+            0xF0 | 0xF1 => {
+                // BEAT
+                self.beats_waiting = operand;
+            }
+            0xF2 | 0xF3 => {
+                // NOOP
+                self.cycles_waiting = operand;
+            }
+
+            // Unimplemented
+            _ => {
+                println!("Unimplemented opcode: {:02X}", opcode);
+                self.clock_running = false;
+            }
+        };
+    }
+}
+
+struct Memory {
+    pub ram: [u8; 0x20],
+    pub audio: [u8; 0x10],
+}
+
+impl Default for Memory {
+    fn default() -> Self {
+        Self {
+            ram: [0; 0x20],
+            audio: [0; 0x10],
+        }
+    }
+}
+
 pub struct SixFive {
     params: Arc<SixFiveParams>,
     sample_rate: f32,
 
-    instruction_pointer: Arc<Mutex<u8>>,
-    clock_running: Arc<Mutex<bool>>,
-    accumulator: Arc<Mutex<u8>>,
-    ram: Arc<Mutex<[u8; 0x20]>>,
-    audio_registers: Arc<Mutex<[u8; 0x10]>>, // TODO: better internal structure for this?
+    cpu: Arc<Mutex<Cpu>>,
 
     samples_until_execute: f64,
 }
@@ -81,6 +357,29 @@ struct SixFiveParams {
     pub noise_enable: BoolParam,
 }
 
+impl SixFiveParams {
+    fn read_rom(&self, address: u8) -> u8 {
+        let bank_index = self.rom_bank_select.value().as_index();
+        let bank = &self.rom_banks.lock().unwrap()[bank_index];
+
+        if address & 0b1 == 0 {
+            (bank[address as usize / 2] >> 8) as u8
+        } else {
+            bank[address as usize / 2] as u8
+        }
+    }
+
+    fn read_trampoline_vector(&self, address: u8) -> u8 {
+        match address {
+            0xFC => self.trampoline_vectors[0].state.value() as u8,
+            0xFD => self.trampoline_vectors[1].state.value() as u8,
+            0xFE => self.trampoline_vectors[2].state.value() as u8,
+            0xFF => self.trampoline_vectors[3].state.value() as u8,
+            _ => panic!("invalid trampoline vector address"),
+        }
+    }
+}
+
 struct GuiUserState {
     rom_bank: Vec<String>,
 }
@@ -95,15 +394,13 @@ impl Default for GuiUserState {
 
 impl Default for SixFive {
     fn default() -> Self {
+        let params = Arc::new(SixFiveParams::default());
+
         Self {
-            params: Arc::new(SixFiveParams::default()),
+            params: params.clone(),
             sample_rate: 1.0,
 
-            instruction_pointer: Arc::new(Mutex::new(0)),
-            clock_running: Arc::new(Mutex::new(false)),
-            accumulator: Arc::new(Mutex::new(0)),
-            ram: Arc::new(Mutex::new([0; 0x20])),
-            audio_registers: Arc::new(Mutex::new([0; 0x10])),
+            cpu: Arc::new(Mutex::new(Cpu::new(&params))),
 
             samples_until_execute: 0.0,
         }
@@ -121,7 +418,7 @@ impl Default for SixFiveParams {
 
             clock_speed: IntParam::new(
                 "Clock Speed",
-                1,
+                10,
                 IntRange::Linear {
                     min: 1,
                     max: 1_000_000,
@@ -175,7 +472,7 @@ const TRAMPOLINE_VECTOR_JUMP_ADDRESSES: [(u8, u8); 4] =
 struct SixFiveEditor;
 
 impl SixFiveEditor {
-    fn draw_rom_location(ui: &mut egui::Ui, active: bool, input: &mut String, mut value: &mut u16) {
+    fn draw_rom_location(ui: &mut egui::Ui, active: bool, input: &mut String, value: &mut u16) {
         egui::Frame::none()
             .stroke(egui::Stroke::new(
                 2.0,
@@ -214,7 +511,7 @@ impl SixFiveEditor {
         params: &SixFiveParams,
         setter: &ParamSetter,
         state: &mut GuiUserState,
-        instruction_pointer: &Arc<Mutex<u8>>,
+        cpu: &Cpu,
     ) {
         ui.group(|ui| {
             ui.vertical_centered_justified(|ui| {
@@ -258,7 +555,7 @@ impl SixFiveEditor {
 
                             SixFiveEditor::draw_rom_location(
                                 ui,
-                                instruction_pointer.lock().unwrap().clone() == (index as u8 * 2),
+                                cpu.instruction_pointer == (index as u8 * 2),
                                 &mut state.rom_bank[index],
                                 &mut params.rom_banks.lock().unwrap()[selected_index][index],
                             )
@@ -269,10 +566,10 @@ impl SixFiveEditor {
         });
     }
 
-    fn draw_ram(ui: &mut egui::Ui, ram_bank: &Arc<Mutex<[u8; 0x20]>>) {
+    fn draw_ram(ui: &mut egui::Ui, cpu: &Cpu) {
         ui.group(|ui| {
             ui.vertical_centered_justified(|ui| {
-                let ram = ram_bank.lock().unwrap();
+                let ram = cpu.memory.ram;
 
                 for row in 0..2 {
                     ui.horizontal_top(|ui| {
@@ -297,7 +594,7 @@ impl SixFiveEditor {
         });
     }
 
-    fn draw_audio_registers(ui: &mut egui::Ui, audio_registers: &Arc<Mutex<[u8; 0x10]>>) {
+    fn draw_audio_registers(ui: &mut egui::Ui, cpu: &Cpu) {
         ui.group(|ui| {
             ui.vertical_centered_justified(|ui| {
                 // TODO: register-specific readouts
@@ -307,7 +604,7 @@ impl SixFiveEditor {
 
                     ui.add_space(15.0);
 
-                    let audio_registers = audio_registers.lock().unwrap();
+                    let audio_registers = cpu.memory.audio;
 
                     for col in 0..16 {
                         ui.label(
@@ -326,38 +623,34 @@ impl SixFiveEditor {
         ui: &mut egui::Ui,
         params: &SixFiveParams,
         setter: &ParamSetter,
-        instruction_pointer: &Arc<Mutex<u8>>,
-        clock_running: &Arc<Mutex<bool>>,
+        cpu: &mut Cpu,
     ) {
         ui.group(|ui| {
             ui.vertical_centered_justified(|ui| {
                 ui.horizontal_top(|ui| {
                     if ui.button("↺").clicked() {
-                        *instruction_pointer.lock().unwrap() = 0;
+                        cpu.reset();
                     }
 
                     if ui.button("▶").clicked() {
-                        *clock_running.lock().unwrap() = true;
+                        cpu.clock_running = true;
                     }
 
                     if ui.button("⏹").clicked() {
-                        *clock_running.lock().unwrap() = false;
-                        *instruction_pointer.lock().unwrap() = 0;
+                        cpu.reset();
+                        cpu.clock_running = false;
                     }
 
                     if ui.button("⏸").clicked() {
-                        *clock_running.lock().unwrap() = false;
+                        cpu.clock_running = false;
                     }
 
                     ui.add_space(20.0);
 
                     ui.label("Instruction Pointer");
                     ui.label(
-                        egui::RichText::from(format!(
-                            "0x{:02X}",
-                            instruction_pointer.lock().unwrap().clone()
-                        ))
-                        .monospace(),
+                        egui::RichText::from(format!("0x{:02X}", cpu.instruction_pointer))
+                            .monospace(),
                     );
                     ui.label("Clock Speed");
                     ui.label(
@@ -371,7 +664,7 @@ impl SixFiveEditor {
         });
     }
 
-    fn draw_overwrite_instruction_pointer(ui: &mut egui::Ui, instruction_pointer: &Arc<Mutex<u8>>) {
+    fn draw_overwrite_instruction_pointer(ui: &mut egui::Ui, cpu: &mut Cpu) {
         ui.group(|ui| {
             ui.label("Overwrite Instruction Pointer");
             for chunk in OVERWRITE_INSTRUCTION_POINTER_VALUES.chunks(4) {
@@ -381,7 +674,8 @@ impl SixFiveEditor {
                             .button(egui::RichText::from(format!("0x{:02X}", i)).monospace())
                             .clicked()
                         {
-                            *instruction_pointer.lock().unwrap() = i.clone();
+                            cpu.instruction_pointer = i.clone();
+                            cpu.clock_running = true;
                         }
                     }
 
@@ -519,7 +813,7 @@ impl SixFiveEditor {
         });
     }
 
-    fn draw_register_view(ui: &mut egui::Ui) {
+    fn draw_register_view(ui: &mut egui::Ui, cpu: &mut Cpu) {
         ui.group(|ui| {
             ui.label("Register View");
 
@@ -530,7 +824,7 @@ impl SixFiveEditor {
 
                 ui.add_space(5.0);
 
-                ui.label(egui::RichText::from("0x00").monospace());
+                ui.label(egui::RichText::from(format!("{:02X}", cpu.accumulator)).monospace());
 
                 ui.add_space(ui.available_width());
             });
@@ -581,15 +875,12 @@ impl Plugin for SixFive {
     }
 
     fn reset(&mut self) {
-        *self.instruction_pointer.lock().unwrap() = 0;
+        self.cpu.lock().unwrap().reset();
     }
 
     fn editor(&self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         let params = self.params.clone();
-        let instruction_pointer = self.instruction_pointer.clone();
-        let ram_bank = self.ram.clone();
-        let audio_registers = self.audio_registers.clone();
-        let clock_running = self.clock_running.clone();
+        let cpu = self.cpu.clone();
 
         create_egui_editor(
             self.params.editor_state.clone(),
@@ -600,26 +891,19 @@ impl Plugin for SixFive {
 
                 egui::CentralPanel::default().show(egui_ctx, |ui| {
                     ui.vertical_centered_justified(|ui| {
-                        SixFiveEditor::draw_rom(ui, &params, setter, state, &instruction_pointer);
+                        let mut cpu = cpu.lock().unwrap();
 
-                        SixFiveEditor::draw_ram(ui, &ram_bank);
+                        SixFiveEditor::draw_rom(ui, &params, setter, state, &cpu);
 
-                        SixFiveEditor::draw_audio_registers(ui, &audio_registers);
+                        SixFiveEditor::draw_ram(ui, &cpu);
 
-                        SixFiveEditor::draw_instruction_pointer(
-                            ui,
-                            &params,
-                            setter,
-                            &instruction_pointer,
-                            &clock_running,
-                        );
+                        SixFiveEditor::draw_audio_registers(ui, &cpu);
+
+                        SixFiveEditor::draw_instruction_pointer(ui, &params, setter, &mut cpu);
 
                         ui.columns(2, |columns| {
                             columns[0].vertical(|ui| {
-                                SixFiveEditor::draw_overwrite_instruction_pointer(
-                                    ui,
-                                    &instruction_pointer,
-                                );
+                                SixFiveEditor::draw_overwrite_instruction_pointer(ui, &mut cpu);
 
                                 SixFiveEditor::draw_enable_voices(ui, &params, setter);
                             });
@@ -627,7 +911,7 @@ impl Plugin for SixFive {
                             columns[1].vertical(|ui| {
                                 SixFiveEditor::draw_trampoline_vectors(ui, &params, setter);
 
-                                SixFiveEditor::draw_register_view(ui);
+                                SixFiveEditor::draw_register_view(ui, &mut cpu);
                             });
                         });
                     });
@@ -644,17 +928,21 @@ impl Plugin for SixFive {
     ) -> ProcessStatus {
         let mut next_event = context.next_event();
         for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {
-            if *self.clock_running.lock().unwrap() {
-                if self.samples_until_execute <= 0.0 {
-                    // TODO: execute instruction
-                    let mut ip = self.instruction_pointer.lock().unwrap();
-                    *ip = ip.wrapping_add(2);
+            {
+                let mut cpu = self.cpu.lock().unwrap();
 
-                    self.samples_until_execute +=
-                        (self.sample_rate as f64) / (self.params.clock_speed.value() as f64);
+                if cpu.clock_running {
+                    if self.samples_until_execute <= 0.0 {
+                        cpu.execute();
+
+                        self.samples_until_execute +=
+                            (self.sample_rate as f64) / (self.params.clock_speed.value() as f64);
+                    }
+
+                    self.samples_until_execute -= 1.0;
+                } else {
+                    self.samples_until_execute = 0.0;
                 }
-
-                self.samples_until_execute -= 1.0;
             }
 
             while let Some(event) = next_event {
