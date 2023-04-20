@@ -1,20 +1,6 @@
 use std::sync::Arc;
 
-use crate::params::SixFiveParams;
-
-pub struct Memory {
-    pub ram: [u8; 0x20],
-    pub audio: [u8; 0x10],
-}
-
-impl Default for Memory {
-    fn default() -> Self {
-        Self {
-            ram: [0; 0x20],
-            audio: [0; 0x10],
-        }
-    }
-}
+use crate::{params::SixFiveParams, sound::SoundChip};
 
 pub struct Cpu {
     pub accumulator: u8,
@@ -25,7 +11,8 @@ pub struct Cpu {
     pub beats_waiting: u8,
     pub cycles_waiting: u8,
 
-    pub memory: Memory,
+    pub ram: [u8; 0x20],
+    pub sound: SoundChip,
     pub params: Arc<SixFiveParams>,
 }
 
@@ -40,7 +27,9 @@ impl Cpu {
             beats_waiting: 0,
             cycles_waiting: 0,
 
-            memory: Memory::default(),
+            ram: [0; 0x20],
+            sound: SoundChip::default(),
+
             params: params.clone(),
         }
     }
@@ -49,7 +38,8 @@ impl Cpu {
         self.instruction_pointer = 0;
         self.accumulator = 0;
         self.status_register = (false, false);
-        self.memory = Memory::default();
+        self.ram = [0; 0x20];
+        self.sound = SoundChip::default();
     }
 
     fn set_status_register(&mut self, value: u8) {
@@ -59,8 +49,8 @@ impl Cpu {
     fn read(&mut self, address: u8) -> u8 {
         match address {
             0x00..=0x7F => self.params.read_rom(address),
-            0x80..=0x9F => self.memory.ram[address as usize - 0x80],
-            0xA0..=0xAF => self.memory.audio[address as usize - 0xA0],
+            0x80..=0x9F => self.ram[address as usize - 0x80],
+            0xA0..=0xAF => self.sound.read(address),
             0xB0..=0xEF => panic!("unimplemented memory read"),
             0xF0..=0xFF => self.params.read_trampoline_vector(address),
         }
@@ -70,8 +60,8 @@ impl Cpu {
         println!("writing {:02X} to {:02X}", value, address);
         match address {
             0x00..=0x7F => panic!("ROM not writable"),
-            0x80..=0x9F => self.memory.ram[address as usize - 0x80] = value,
-            0xA0..=0xAF => self.memory.audio[address as usize - 0xA0] = value,
+            0x80..=0x9F => self.ram[address as usize - 0x80] = value,
+            0xA0..=0xAF => self.sound.write(address, value),
             0xB0..=0xEF => panic!("unimplemented memory write"),
             0xF0..=0xFF => panic!("trampoline vectors not writable"),
         }
@@ -259,8 +249,8 @@ impl Cpu {
             // Audio Register Manipulation
             0xA0..=0xAF | 0xB0..=0xBF => {
                 // AWI0 ... AWIF
-                let index = (opcode & 0x0F) as usize;
-                self.memory.audio[index] = operand;
+                let index = (opcode & 0x0F) | 0xA0;
+                self.sound.write(index, operand);
             }
 
             // No-ops and Waits

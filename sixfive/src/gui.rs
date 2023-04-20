@@ -130,8 +130,6 @@ fn draw_rom(
 fn draw_ram(ui: &mut egui::Ui, cpu: &Cpu) {
     ui.group(|ui| {
         ui.vertical_centered_justified(|ui| {
-            let ram = cpu.memory.ram;
-
             for row in 0..2 {
                 ui.horizontal_top(|ui| {
                     ui.label(
@@ -142,7 +140,7 @@ fn draw_ram(ui: &mut egui::Ui, cpu: &Cpu) {
 
                     for col in 0..16 {
                         ui.label(
-                            egui::RichText::from(format!("{:02X}", ram[row * 0x10 + col]))
+                            egui::RichText::from(format!("{:02X}", cpu.ram[row * 0x10 + col]))
                                 .monospace(),
                         );
                     }
@@ -164,11 +162,10 @@ fn draw_audio_registers(ui: &mut egui::Ui, cpu: &Cpu) {
 
                 ui.add_space(15.0);
 
-                let audio_registers = cpu.memory.audio;
-
-                for col in 0..16 {
+                for register in 0xA0..=0xAF {
                     ui.label(
-                        egui::RichText::from(format!("{:02X}", audio_registers[col])).monospace(),
+                        egui::RichText::from(format!("{:02X}", cpu.sound.read(register)))
+                            .monospace(),
                     );
                 }
 

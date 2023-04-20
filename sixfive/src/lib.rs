@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 mod cpu;
 mod gui;
 mod params;
+mod sound;
 
 use cpu::Cpu;
 use params::SixFiveParams;
@@ -31,20 +32,6 @@ impl Default for SixFive {
             samples_until_execute: 0.0,
         }
     }
-}
-
-impl SixFive {
-    // fn calculate_sine(&mut self, frequency: f32) -> f32 {
-    //     let phase_delta = frequency / self.sample_rate;
-    //     let sine = (self.phase * consts::TAU).sin();
-
-    //     self.phase += phase_delta;
-    //     if self.phase >= 1.0 {
-    //         self.phase -= 1.0;
-    //     }
-
-    //     sine
-    // }
 }
 
 impl Plugin for SixFive {
@@ -109,7 +96,7 @@ impl Plugin for SixFive {
     ) -> ProcessStatus {
         let mut next_event = context.next_event();
         for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {
-            {
+            let output = {
                 let mut cpu = self.cpu.lock().unwrap();
 
                 if cpu.clock_running {
@@ -124,6 +111,12 @@ impl Plugin for SixFive {
                 } else {
                     self.samples_until_execute = 0.0;
                 }
+
+                cpu.sound.generate()
+            };
+
+            for sample in channel_samples {
+                *sample = output;
             }
 
             while let Some(event) = next_event {
