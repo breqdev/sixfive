@@ -1,0 +1,13 @@
+noise tests:
+AC0F AF40; no envelope
+AC14 AF80; envelope
+
+pulse tests:
+A08F A2FF A380
+A04F A280 A3F8
+A095 a280 a380 ; envelope
+
+triangle:
+A80F AA80 AB80
+A814 AAD0 AB83; envelope
+
