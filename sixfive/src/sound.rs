@@ -16,6 +16,10 @@ pub mod conversions {
     pub fn envelope_length_to_seconds(length: u8) -> f64 {
         (length as f64) * 1.0 / 15.0
     }
+
+    pub fn seconds_to_shift_steps(seconds: f64) -> u16 {
+        (seconds / (60.0 * 2.0)) as u16
+    }
 }
 
 pub struct ChannelRegisters {
@@ -141,10 +145,25 @@ impl ChannelRegisters {
         // Otherwise, use the constant volume
         self.envelope_length as f32 / CHANNEL_MAX_VOLUME
     }
+
+    fn get_effective_period(&self) -> u16 {
+        let steps_since_shift = conversions::seconds_to_shift_steps(self.time_since_note);
+        let mut effective_period = self.period;
+        if self.shift_enabled {
+        for _ in 0..steps_since_shift {
+            if self.shift_reverse {
+                    effective_period -= effective_period >> self.shift_period;
+                } else {
+                    effective_period += effective_period >> self.shift_period;
+                }
+            }
+        };
+        effective_period
+    }
 }
 
 pub trait WaveGenerator: Default {
-    fn generate(&mut self, registers: &mut ChannelRegisters, sample_rate: f64) -> f32;
+    fn generate(&mut self, registers: &mut ChannelRegisters) -> f32;
 }
 
 pub struct SquareWave {}
@@ -156,9 +175,9 @@ impl Default for SquareWave {
 }
 
 impl WaveGenerator for SquareWave {
-    fn generate(&mut self, registers: &mut ChannelRegisters, sample_rate: f64) -> f32 {
+    fn generate(&mut self, registers: &mut ChannelRegisters) -> f32 {
         let elapsed = registers.time_since_note;
-        let period = conversions::note_period_to_seconds(registers.period);
+        let period = conversions::note_period_to_seconds(registers.get_effective_period());
         let relative = (elapsed % period) / period;
 
         let value = match registers.duty_cycle {
@@ -206,9 +225,9 @@ impl Default for TriangleWave {
 }
 
 impl WaveGenerator for TriangleWave {
-    fn generate(&mut self, registers: &mut ChannelRegisters, sample_rate: f64) -> f32 {
+    fn generate(&mut self, registers: &mut ChannelRegisters) -> f32 {
         let elapsed = registers.time_since_note;
-        let period = conversions::note_period_to_seconds(registers.period);
+        let period = conversions::note_period_to_seconds(registers.get_effective_period());
         let relative = (elapsed % period) / period;
 
         let value = if relative < 0.5 {
@@ -232,7 +251,7 @@ impl Default for Noise {
 }
 
 impl WaveGenerator for Noise {
-    fn generate(&mut self, registers: &mut ChannelRegisters, sample_rate: f64) -> f32 {
+    fn generate(&mut self, registers: &mut ChannelRegisters) -> f32 {
         let feedback = (self.shift_register & 0b1) ^ ((self.shift_register >> 1) & 0b1);
         self.shift_register >>= 1;
         self.shift_register |= feedback << 14;
@@ -270,7 +289,7 @@ impl<T: WaveGenerator> Channel<T> {
 
     pub fn generate(&mut self, sample_rate: f64) -> f32 {
         self.registers.tick(sample_rate);
-        self.generator.generate(&mut self.registers, sample_rate)
+        self.generator.generate(&mut self.registers)
     }
 
     pub fn registers(&self) -> &ChannelRegisters {
